@@ -16,7 +16,8 @@ function parseDDD(buffer) {
     const tag = view.getUint16(offset, false);
     const len = view.getUint16(offset + 2, false);
     offset += 4;
-    if (offset + len > size || len === 0) break;
+    if (len === 0) continue;
+    if (offset + len > size) break;
     if (tag === 0x0502 && len >= 35) {
       const dec = new TextDecoder("latin1");
       const sur = dec.decode(new Uint8Array(buffer, offset, 35)).replace(/\0/g, "").trim();
@@ -34,29 +35,47 @@ function parseActivity(buffer) {
   const view = new DataView(buffer);
   const size = buffer.byteLength;
   if (size < 4) return [];
-  const oldestPtr = view.getUint16(0, false);
-  let offset = 4 + (oldestPtr < size - 4 ? oldestPtr : 0);
-  const days = [];
-  let guard = 0;
-  while (offset + 12 <= size && guard++ < 200) {
-    const recLen = view.getUint16(offset + 2, false);
-    if (recLen < 12 || offset + recLen > size) break;
-    const ts = view.getUint32(offset + 4, false);
-    const dist = view.getUint16(offset + 10, false);
-    const date = new Date(ts * 1000);
-    const yr = date.getUTCFullYear();
-    if (yr >= 2000 && yr <= 2050) {
-      const activities = [];
-      for (let i = offset + 12; i + 1 < offset + recLen && i + 1 <= size; i += 2) {
-        const w = view.getUint16(i, false);
-        if ((w >> 15) & 1) continue;
-        activities.push({ act: (w >> 13) & 3, time: w & 0x7ff });
+
+  function scanFrom(startOffset) {
+    const days = [];
+    let offset = startOffset;
+    let guard = 0;
+    while (offset + 12 <= size && guard++ < 400) {
+      const recLen = view.getUint16(offset + 2, false);
+      if (recLen < 12 || recLen > 8192 || offset + recLen > size) break;
+      const ts = view.getUint32(offset + 4, false);
+      const dist = view.getUint16(offset + 10, false);
+      const date = new Date(ts * 1000);
+      const yr = date.getUTCFullYear();
+      if (yr >= 2000 && yr <= 2050) {
+        const activities = [];
+        for (let i = offset + 12; i + 1 < offset + recLen && i + 1 <= size; i += 2) {
+          const w = view.getUint16(i, false);
+          if ((w >> 15) & 1) continue;
+          activities.push({ act: (w >> 13) & 3, time: w & 0x7ff });
+        }
+        if (activities.length > 0 || dist > 0) days.push({ date, dist, activities });
       }
-      if (activities.length > 0 || dist > 0) days.push({ date, dist, activities });
+      offset += recLen;
     }
-    offset += recLen;
+    return days;
   }
-  return days.sort((a, b) => a.date - b.date);
+
+  // Try several starting offsets — different card generations use different headers
+  const ptr = view.getUint16(0, false);
+  const candidates = [
+    ptr > 0 && ptr + 4 < size ? 4 + ptr : null,
+    4,
+    0,
+  ];
+  let best = [];
+  for (const start of candidates) {
+    if (start === null) continue;
+    const days = scanFrom(start);
+    if (days.length > best.length) best = days;
+    if (best.length > 0) break;
+  }
+  return best.sort((a, b) => a.date - b.date);
 }
 
 function toSegments(acts) {
