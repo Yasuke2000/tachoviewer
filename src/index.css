@@ -1,0 +1,13 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { -webkit-font-smoothing: antialiased; }
+
+@media print {
+  body { background: white !important; color: black !important; }
+  .no-print { display: none !important; }
+
+  /* Make activity bands visible on paper */
+  [data-act="0"] { background: #16a34a !important; }
+  [data-act="1"] { background: #ca8a04 !important; }
+  [data-act="2"] { background: #ea580c !important; }
+  [data-act="3"] { background: #2563eb !important; }
+}
