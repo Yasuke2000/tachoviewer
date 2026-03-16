@@ -36,46 +36,53 @@ function parseActivity(buffer) {
   const size = buffer.byteLength;
   if (size < 4) return [];
 
-  function scanFrom(startOffset) {
-    const days = [];
-    let offset = startOffset;
+  function readChunk(from, to, out) {
+    let offset = from;
     let guard = 0;
-    while (offset + 12 <= size && guard++ < 400) {
+    while (offset + 12 <= to && guard++ < 400) {
       const recLen = view.getUint16(offset + 2, false);
-      if (recLen < 12 || recLen > 8192 || offset + recLen > size) break;
-      const ts = view.getUint32(offset + 4, false);
+      if (recLen < 12 || recLen > 8192 || offset + recLen > to) break;
+      const ts   = view.getUint32(offset + 4, false);
       const dist = view.getUint16(offset + 10, false);
       const date = new Date(ts * 1000);
-      const yr = date.getUTCFullYear();
+      const yr   = date.getUTCFullYear();
       if (yr >= 2000 && yr <= 2050) {
         const activities = [];
-        for (let i = offset + 12; i + 1 < offset + recLen && i + 1 <= size; i += 2) {
+        for (let i = offset + 12; i + 1 < offset + recLen && i + 1 <= to; i += 2) {
           const w = view.getUint16(i, false);
           if ((w >> 15) & 1) continue;
           activities.push({ act: (w >> 13) & 3, time: w & 0x7ff });
         }
-        if (activities.length > 0 || dist > 0) days.push({ date, dist, activities });
+        if (activities.length > 0 || dist > 0) out.push({ date, dist, activities });
       }
       offset += recLen;
     }
+  }
+
+  // Read from startOff → end, then wrap: bufStart → startOff (circular buffer)
+  function scanWithWrap(ptr) {
+    const bufStart  = 4;
+    const startOff  = bufStart + (ptr > 0 && ptr < size - bufStart ? ptr : 0);
+    const days = [];
+    readChunk(startOff, size, days);
+    if (startOff > bufStart) readChunk(bufStart, startOff, days);
     return days;
   }
 
-  // Try several starting offsets — different card generations use different headers
-  const ptr = view.getUint16(0, false);
-  const candidates = [
-    ptr > 0 && ptr + 4 < size ? 4 + ptr : null,
-    4,
-    0,
-  ];
-  let best = [];
-  for (const start of candidates) {
-    if (start === null) continue;
-    const days = scanFrom(start);
-    if (days.length > best.length) best = days;
-    if (best.length > 0) break;
+  // EU spec: bytes 0-1 = presence counter, bytes 2-3 = offset to oldest record.
+  // Fall back to bytes 0-1 and plain linear starts for older/non-standard cards.
+  const ptr2 = view.getUint16(2, false);
+  const ptr0 = view.getUint16(0, false);
+  for (const fn of [
+    () => scanWithWrap(ptr2),
+    () => scanWithWrap(ptr0),
+    () => { const d = []; readChunk(4, size, d); return d; },
+    () => { const d = []; readChunk(0, size, d); return d; },
+  ]) {
+    const days = fn();
+    if (days.length > 0) return days.sort((a, b) => a.date - b.date);
   }
-  return best.sort((a, b) => a.date - b.date);
+  return [];
 }
 
 function toSegments(acts) {
