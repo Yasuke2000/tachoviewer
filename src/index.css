@@ -5,28 +5,17 @@ body { -webkit-font-smoothing: antialiased; }
   html, body { background: white !important; }
   body { color: #111 !important; font-size: 11px !important; }
   .no-print { display: none !important; }
-
-  /* Force white background everywhere */
   div { background: white !important; color: #111 !important; border-color: #ddd !important; }
 
-  /* Keep activity band colors visible on paper */
-  [data-act="0"] { background: #16a34a !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-  [data-act="1"] { background: #ca8a04 !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-  [data-act="2"] { background: #ea580c !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-  [data-act="3"] { background: #2563eb !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  /* Activity band colors for print */
+  [data-act="0"] { background: #93c5fd !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  [data-act="1"] { background: #fde047 !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  [data-act="2"] { background: #fdba74 !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  [data-act="3"] { background: #fca5a5 !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
 
-  /* Band background for print */
   div[style*="position: relative"] { background: #f0f0f0 !important; }
-
-  /* Stat card values keep color */
-  div[style*="font-weight: 700"][style*="font-size: 16px"] { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-
-  /* Legend squares */
+  div[style*="font-weight: 700"][style*="font-size: 15"] { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   div[style*="width: 14px"][style*="height: 14px"] { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
 
-  /* Page setup */
-  @page {
-    size: A4 landscape;
-    margin: 10mm;
-  }
+  @page { size: A4 landscape; margin: 10mm; }
 }
