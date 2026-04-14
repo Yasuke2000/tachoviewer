@@ -361,6 +361,8 @@ export default function App() {
   const activeDays = days ? days.filter(d => d.activities.some(a => a.act === 3)).length : 0;
   const uniqueVehicles = data?.vehicles ? [...new Map(data.vehicles.map(v => [v.reg, v])).values()] : [];
   const eventCount = (data?.events?.length || 0) + (data?.faults?.length || 0);
+  const realViolations = useMemo(() => violations.filter(v => v.severity !== "INFO"), [violations]);
+  const totalFine = useMemo(() => violations.reduce((s, v) => s + (v.estimatedFine || 0), 0), [violations]);
 
   const sevCounts = useMemo(() => {
     const c = { MSI: 0, VSI: 0, SI: 0, MI: 0, INFO: 0 };
@@ -368,329 +370,278 @@ export default function App() {
     return c;
   }, [violations]);
 
-  const S = {
-    root: { fontFamily: "'Segoe UI', system-ui, sans-serif", minHeight: "100vh", background: "#080b12", color: "#c9d1d9", fontSize: 13 },
-    hdr: { background: "#0d1117", borderBottom: "2px solid #1c2333", padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 },
-    logo: { fontWeight: 700, fontSize: 16, color: "#e6edf3", letterSpacing: 1, fontFamily: "'Courier New', monospace" },
-    badge: { fontSize: 10, color: "#3b82f6", border: "1px solid #1d3557", borderRadius: 4, padding: "2px 8px", marginLeft: 8, fontFamily: "monospace" },
-    wrap: { maxWidth: 1100, margin: "0 auto", padding: "24px 16px" },
-    dropzone: (isDrag) => ({ border: `2px dashed ${isDrag ? "#3b82f6" : "#1c2333"}`, borderRadius: 12, padding: "64px 32px", textAlign: "center", cursor: "pointer", background: isDrag ? "#0d1929" : "#0d1117", transition: "all 0.15s" }),
-    card: { background: "#0d1117", border: "1px solid #1c2333", borderRadius: 8, padding: "12px 16px" },
-    stats: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 20 },
-    infoGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 10, marginBottom: 16 },
-    ruler: { display: "flex", paddingLeft: 98, marginBottom: 3, gap: 0, paddingRight: 48 },
-    bands: { display: "flex", flexDirection: "column", gap: 1 },
-    row: { display: "flex", alignItems: "center", gap: 8 },
-    lbl: { width: 90, flexShrink: 0, textAlign: "right", paddingRight: 8, fontSize: 10 },
-    band: { flex: 1, height: 18, background: "#161b22", borderRadius: 2, overflow: "hidden", position: "relative" },
-    dur: { width: 42, textAlign: "right", fontSize: 9, color: "#6b7280", flexShrink: 0 },
-    btnSm: { background: "#1c2333", color: "#c9d1d9", border: "1px solid #2d3748", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11 },
-    btnGhost: { background: "transparent", color: "#6b7280", border: "1px solid #2d3748", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12 },
-    err: { background: "#1a0505", border: "1px solid #7f1d1d", borderRadius: 8, padding: "12px 16px", color: "#fca5a5", marginTop: 12 },
-    tabBar: { display: "flex", gap: 2, marginBottom: 16, borderBottom: "1px solid #1c2333", paddingBottom: 0, overflowX: "auto" },
-    tab: (active) => ({ padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: active ? 600 : 400, color: active ? "#e6edf3" : "#6b7280", background: active ? "#1c2333" : "transparent", border: "none", borderBottom: active ? "2px solid #3b82f6" : "2px solid transparent", whiteSpace: "nowrap" }),
-    vRow: { background: "#0d1117", border: "1px solid #1c2333", borderRadius: 8, padding: "10px 14px", marginBottom: 6 },
-    sevBadge: (sev) => ({ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700, color: "#fff", background: SEV[sev]?.color || "#6b7280" }),
-    tbl: { width: "100%", borderCollapse: "collapse", fontSize: 12 },
-    th: { textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #1c2333", color: "#6b7280", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em" },
-    td: { padding: "6px 10px", borderBottom: "1px solid #0d1117", color: "#c9d1d9" },
-    subHead: { fontSize: 13, fontWeight: 600, color: "#9ca3af", marginBottom: 10, marginTop: 16 },
-  };
+  /* glass card base */
+  const glass = { background: "rgba(15,23,42,0.6)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", border: "1px solid rgba(56,72,96,0.4)", borderRadius: 12, padding: "14px 18px" };
+  const glassAccent = (color) => ({ ...glass, borderLeft: `3px solid ${color}` });
 
-  const TabBadge = ({ count, color }) => count > 0 ? <span style={{ background: color || "#3b82f6", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, marginLeft: 4 }}>{count}</span> : null;
+  const TabBadge = ({ count, color }) => count > 0 ? <span className="tab-badge" style={{ background: color || "#3b82f6" }}>{count}</span> : null;
 
   return (
-    <div style={S.root}>
-      <div style={S.hdr}>
-        <div><span style={S.logo}>TACHOVIEWER</span><span style={S.badge}>offline · browser-only</span></div>
+    <div className="app-root">
+      {/* ── Header ────────────────────────────────────────────────── */}
+      <header className="app-header">
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div className="logo-mark">T</div>
+          <div>
+            <div className="logo-text">TACHOVIEWER</div>
+            <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.05em" }}>100% browser · geen upload</div>
+          </div>
+        </div>
         {data && (
-          <div className="no-print" style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-            <button style={S.btnSm} onClick={() => exportPDF(data, violations)}>PDF</button>
-            <button style={S.btnSm} onClick={() => exportExcel(data, violations)}>Excel</button>
-            <button style={S.btnSm} onClick={() => exportCSV(data, violations)}>CSV</button>
-            <button style={S.btnGhost} onClick={() => setData(null)}>← nieuw</button>
+          <div className="no-print header-actions">
+            <button className="btn-export" onClick={() => exportPDF(data, violations)}>PDF</button>
+            <button className="btn-export" onClick={() => exportExcel(data, violations)}>Excel</button>
+            <button className="btn-export" onClick={() => exportCSV(data, violations)}>CSV</button>
+            <button className="btn-ghost" onClick={() => setData(null)}>← Nieuw bestand</button>
           </div>
         )}
-      </div>
-      <div style={S.wrap}>
+      </header>
+
+      <div className="app-wrap">
+        {/* ── Upload zone ──────────────────────────────────────────── */}
         {!data && !busy && (
-          <div style={S.dropzone(drag)} onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
-            onDrop={e => { e.preventDefault(); setDrag(false); load(e.dataTransfer.files[0]); }} onClick={() => inputRef.current?.click()}>
+          <div className={`dropzone ${drag ? "dropzone-active" : ""}`}
+            onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
+            onDrop={e => { e.preventDefault(); setDrag(false); load(e.dataTransfer.files[0]); }}
+            onClick={() => inputRef.current?.click()}>
             <input ref={inputRef} type="file" accept=".ddd,.esm,.tgd,.add" style={{ display: "none" }} onChange={e => load(e.target.files[0])} />
-            <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: "#e6edf3", marginBottom: 6 }}>Sleep je .ddd bestand hier</div>
-            <div style={{ color: "#4b5563", marginBottom: 16 }}>of klik om te selecteren · .ddd .esm .tgd .add</div>
-            <div style={{ fontSize: 11, color: "#374151" }}>🔒 Bestand verlaat je browser nooit</div>
+            <div className="dropzone-icon">
+              <svg width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", marginBottom: 8 }}>Sleep je .ddd bestand hier</div>
+            <div style={{ color: "#64748b", marginBottom: 20 }}>of klik om te selecteren</div>
+            <div className="dropzone-formats">.ddd .esm .tgd .add</div>
+            <div style={{ fontSize: 11, color: "#475569", marginTop: 16 }}>🔒 Verwerking volledig in je browser — geen data wordt verstuurd</div>
           </div>
         )}
-        {err && <div style={S.err}>⚠ {err}</div>}
-        {busy && <div style={{ textAlign: "center", padding: 48, color: "#4b5563" }}>verwerken...</div>}
+        {err && <div className="error-banner">⚠ {err}</div>}
+        {busy && <div style={{ textAlign: "center", padding: 64, color: "#64748b" }}><div className="spinner" />Bestand verwerken...</div>}
 
         {data && days && (<>
-          {/* Header */}
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 22, fontWeight: 700, color: "#e6edf3" }}>{data.name}</div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              {days.length} dagrecords · {days[0]?.date.toLocaleDateString("nl-BE")} → {days[days.length - 1]?.date.toLocaleDateString("nl-BE")}
-              {data.birthDate && <span> · Geb. {data.birthDate}</span>}
-              {data.licenceNumber && <span> · Rijbewijs {data.licenceNumber}</span>}
+          {/* ── Driver header ──────────────────────────────────────── */}
+          <div style={{ marginBottom: 20 }}>
+            <h1 className="driver-name">{data.name}</h1>
+            <div className="driver-meta">
+              {days.length} dagen · {days[0]?.date.toLocaleDateString("nl-BE")} → {days[days.length - 1]?.date.toLocaleDateString("nl-BE")}
+              {data.birthDate && <span className="meta-sep">Geb. {data.birthDate}</span>}
+              {data.licenceNumber && <span className="meta-sep">Rijbewijs {data.licenceNumber}</span>}
             </div>
           </div>
 
-          {/* Card & Vehicle info */}
-          <div style={S.infoGrid}>
-            {data.cardNumber && <div style={S.card}>
-              <div style={{ fontSize: 9, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Rijkaart</div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3", fontFamily: "monospace" }}>{data.cardNumber}</div>
-              {data.cardIssuer && <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>{data.cardIssuer}</div>}
-              {data.cardExpiry && <div style={{ fontSize: 10, color: "#6b7280" }}>Geldig tot {data.cardExpiry.toLocaleDateString("nl-BE")}</div>}
+          {/* ── Info cards ─────────────────────────────────────────── */}
+          <div className="info-grid">
+            {data.cardNumber && <div style={glassAccent("#3b82f6")}>
+              <div className="card-label">Rijkaart</div>
+              <div className="card-value mono">{data.cardNumber}</div>
+              {data.cardIssuer && <div className="card-sub">{data.cardIssuer}</div>}
+              {data.cardExpiry && <div className="card-sub">Geldig tot {data.cardExpiry.toLocaleDateString("nl-BE")}</div>}
             </div>}
             {uniqueVehicles.map(v => (
-              <div key={v.reg} style={S.card}>
-                <div style={{ fontSize: 9, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Voertuig</div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3", fontFamily: "monospace" }}>{v.nation}-{v.reg}</div>
-                <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>{v.odoBegin.toLocaleString("nl-BE")} → {v.odoEnd < 16777215 ? v.odoEnd.toLocaleString("nl-BE") : "—"} km</div>
+              <div key={v.reg} style={glassAccent("#8b5cf6")}>
+                <div className="card-label">Voertuig</div>
+                <div className="card-value mono">{v.nation}-{v.reg}</div>
+                <div className="card-sub">{v.odoBegin.toLocaleString("nl-BE")} → {v.odoEnd < 16777215 ? v.odoEnd.toLocaleString("nl-BE") : "—"} km</div>
               </div>
             ))}
-            {/* Compliance badge */}
-            <div style={{ ...S.card, borderColor: violations.length ? "#7f1d1d" : "#14532d" }}>
-              <div style={{ fontSize: 9, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Naleving</div>
-              {violations.filter(v => v.severity !== "INFO").length === 0
-                ? <div style={{ fontSize: 14, fontWeight: 700, color: "#22c55e" }}>Conform</div>
-                : <div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "#ef4444", marginBottom: 4 }}>{violations.filter(v => v.severity !== "INFO").length} overtreding{violations.filter(v => v.severity !== "INFO").length !== 1 ? "en" : ""}</div>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <div style={glassAccent(realViolations.length ? "#ef4444" : "#22c55e")}>
+              <div className="card-label">Naleving</div>
+              {realViolations.length === 0
+                ? <div className="card-value" style={{ color: "#22c55e" }}>Conform</div>
+                : <>
+                    <div className="card-value" style={{ color: "#ef4444" }}>{realViolations.length} overtreding{realViolations.length !== 1 ? "en" : ""}</div>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
                       {Object.entries(sevCounts).filter(([k,c]) => c > 0 && k !== "INFO").map(([sev, c]) => (
-                        <span key={sev} style={S.sevBadge(sev)}>{c}× {sev}</span>
+                        <span key={sev} className="sev-badge" style={{ background: SEV[sev]?.color }}>{c}× {sev}</span>
                       ))}
                     </div>
-                    {(() => { const totalFine = violations.reduce((s, v) => s + (v.estimatedFine || 0), 0); return totalFine > 0 ? <div style={{ fontSize: 10, color: "#f97316", marginTop: 4 }}>Geschatte boete (BE): {totalFine.toLocaleString("nl-BE", { style: "currency", currency: "EUR" })}</div> : null; })()}
-                  </div>
+                    {totalFine > 0 && <div style={{ fontSize: 11, color: "#f97316", marginTop: 6 }}>Geschatte boete: {totalFine.toLocaleString("nl-BE", { style: "currency", currency: "EUR" })}</div>}
+                  </>
               }
             </div>
-            {/* Last control */}
-            {data.lastControl && <div style={S.card}>
-              <div style={{ fontSize: 9, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Laatste controle</div>
-              <div style={{ fontSize: 12, color: "#e6edf3" }}>{data.lastControl.typeLabel}</div>
-              <div style={{ fontSize: 10, color: "#6b7280" }}>{data.lastControl.time.toLocaleDateString("nl-BE")}</div>
-              {data.lastControl.controllerCard && <div style={{ fontSize: 10, color: "#6b7280", fontFamily: "monospace" }}>{data.lastControl.controllerCard}</div>}
+            {data.lastControl && <div style={glassAccent("#06b6d4")}>
+              <div className="card-label">Laatste controle</div>
+              <div className="card-value">{data.lastControl.typeLabel}</div>
+              <div className="card-sub">{data.lastControl.time.toLocaleDateString("nl-BE")}</div>
+              {data.lastControl.controllerCard && <div className="card-sub mono">{data.lastControl.controllerCard}</div>}
             </div>}
           </div>
 
-          {/* Stats */}
-          <div style={S.stats}>
+          {/* ── Stat pills ─────────────────────────────────────────── */}
+          <div className="stat-grid">
             {[
-              { l: "Rijdagen", v: activeDays, c: "#ef4444" },
-              { l: "Afstand", v: `${totalKm.toLocaleString("nl-BE")} km`, c: "#22c55e" },
-              { l: "Rijtijd", v: fmtMins(driveMin), c: "#ef4444" },
-              { l: "Werktijd", v: fmtMins(workMin), c: "#fb923c" },
-              { l: "Beschikbaar", v: fmtMins(availMin), c: "#facc15" },
-              { l: "Rusttijd", v: fmtMins(restMin), c: "#60a5fa" },
+              { l: "Rijdagen", v: activeDays, c: "#ef4444", bg: "rgba(239,68,68,0.1)" },
+              { l: "Afstand", v: `${totalKm.toLocaleString("nl-BE")} km`, c: "#22c55e", bg: "rgba(34,197,94,0.1)" },
+              { l: "Rijtijd", v: fmtMins(driveMin), c: "#ef4444", bg: "rgba(239,68,68,0.1)" },
+              { l: "Werktijd", v: fmtMins(workMin), c: "#fb923c", bg: "rgba(251,146,60,0.1)" },
+              { l: "Beschikbaar", v: fmtMins(availMin), c: "#facc15", bg: "rgba(250,204,21,0.1)" },
+              { l: "Rusttijd", v: fmtMins(restMin), c: "#60a5fa", bg: "rgba(96,165,250,0.1)" },
             ].map(s => (
-              <div key={s.l} style={S.card}>
-                <div style={{ fontSize: 9, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>{s.l}</div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: s.c }}>{s.v}</div>
+              <div key={s.l} className="stat-card" style={{ background: s.bg, borderColor: `${s.c}30` }}>
+                <div className="stat-label">{s.l}</div>
+                <div className="stat-value" style={{ color: s.c }}>{s.v}</div>
               </div>
             ))}
           </div>
 
-          {/* Tabs */}
-          <div className="no-print" style={S.tabBar}>
-            <button style={S.tab(tab === "activities")} onClick={() => setTab("activities")}>Activiteiten</button>
-            <button style={S.tab(tab === "violations")} onClick={() => setTab("violations")}>Overtredingen<TabBadge count={violations.length} color="#ef4444" /></button>
-            <button style={S.tab(tab === "vehicles")} onClick={() => setTab("vehicles")}>Voertuigen<TabBadge count={data.vehicles?.length || 0} color="#3b82f6" /></button>
-            <button style={S.tab(tab === "events")} onClick={() => setTab("events")}>Gebeurtenissen<TabBadge count={eventCount} color="#f97316" /></button>
+          {/* ── Tabs ───────────────────────────────────────────────── */}
+          <div className="no-print tab-bar">
+            {[
+              { id: "activities", label: "Activiteiten", badge: 0, color: "" },
+              { id: "violations", label: "Overtredingen", badge: realViolations.length, color: "#ef4444" },
+              { id: "vehicles", label: "Voertuigen", badge: data.vehicles?.length || 0, color: "#8b5cf6" },
+              { id: "events", label: "Gebeurtenissen", badge: eventCount, color: "#f97316" },
+            ].map(t => (
+              <button key={t.id} className={`tab-btn ${tab === t.id ? "tab-active" : ""}`} onClick={() => setTab(t.id)}>
+                {t.label}<TabBadge count={t.badge} color={t.color} />
+              </button>
+            ))}
           </div>
 
-          {/* ── Activities tab ──────────────────────────────────────────── */}
+          {/* ── Activities ─────────────────────────────────────────── */}
           {tab === "activities" && <>
-            <div style={{ display: "flex", gap: 16, marginBottom: 10, flexWrap: "wrap" }}>
+            <div className="legend">
               {Object.entries(ACT).map(([k, v]) => (
-                <div key={k} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#9ca3af" }}>
-                  <div style={{ width: 14, height: 14, background: v.color, borderRadius: 2 }} />{v.label}
+                <div key={k} className="legend-item">
+                  <div className="legend-dot" style={{ background: v.color }} />{v.label}
                 </div>
               ))}
             </div>
-            <div style={S.ruler}>
+            <div className="ruler">
               {[0, 3, 6, 9, 12, 15, 18, 21, 24].map(h => (
-                <div key={h} style={{ flex: h < 24 ? 1 : 0, fontSize: 9, color: "#4b5563", minWidth: 0 }}>{String(h).padStart(2, "0")}h</div>
+                <div key={h} style={{ flex: h < 24 ? 1 : 0, minWidth: 0 }}>{String(h).padStart(2, "0")}h</div>
               ))}
             </div>
-            <div style={S.bands}>
+            <div className="timeline-list">
               {days.map((day, i) => {
                 const segs = toSegments(day.activities);
                 const dm = segs.filter(s => s.act === 3).reduce((s, x) => s + x.dur, 0);
                 const dayViols = violations.filter(v => v.date.toDateString() === day.date.toDateString());
                 return (
-                  <div key={i} style={{ ...S.row, background: dayViols.length ? "rgba(127,29,29,0.15)" : "transparent", borderRadius: 3, padding: "0 4px" }}>
-                    <div style={S.lbl}>
-                      <div style={{ color: "#9ca3af" }}>{fmtDate(day.date)}</div>
-                      {day.dist > 0 && <div style={{ color: "#4b5563", fontSize: 9 }}>{day.dist} km</div>}
+                  <div key={i} className={`timeline-row ${dayViols.length ? "timeline-row-warn" : ""}`}>
+                    <div className="timeline-label">
+                      <span className="timeline-date">{fmtDate(day.date)}</span>
+                      {day.dist > 0 && <span className="timeline-km">{day.dist} km</span>}
                     </div>
-                    <div style={S.band}>
+                    <div className="timeline-bar">
                       {segs.map((s, si) => (
                         <div key={si} data-act={s.act}
                           title={`${ACT[s.act].label} ${String(Math.floor(s.start/60)).padStart(2,"0")}:${String(s.start%60).padStart(2,"0")}–${String(Math.floor(s.end/60)).padStart(2,"0")}:${String(s.end%60).padStart(2,"0")} (${s.dur}m)`}
-                          style={{ position: "absolute", left: `${(s.start/1440)*100}%`, width: `${Math.max((s.dur/1440)*100, 0.3)}%`, height: "100%", background: ACT[s.act].color }} />
+                          style={{ position: "absolute", left: `${(s.start/1440)*100}%`, width: `${Math.max((s.dur/1440)*100, 0.3)}%`, height: "100%", background: ACT[s.act].color, borderRadius: 1 }} />
                       ))}
                     </div>
-                    <div style={S.dur}>{dm > 0 ? `${Math.floor(dm/60)}h${String(dm%60).padStart(2,"0")}` : ""}</div>
-                    {dayViols.length > 0 && <div style={{ fontSize: 9, color: "#ef4444", width: 16, textAlign: "center" }}>⚠</div>}
+                    <div className="timeline-dur">{dm > 0 ? `${Math.floor(dm/60)}h${String(dm%60).padStart(2,"0")}` : ""}</div>
+                    {dayViols.length > 0 && <div className="timeline-warn">⚠</div>}
                   </div>
                 );
               })}
             </div>
           </>}
 
-          {/* ── Violations tab ─────────────────────────────────────────── */}
+          {/* ── Violations ─────────────────────────────────────────── */}
           {tab === "violations" && <>
             {violations.length === 0 ? (
-              <div style={{ textAlign: "center", padding: 48, color: "#22c55e", fontSize: 16 }}>Geen overtredingen gevonden — volledig conform</div>
+              <div className="empty-state" style={{ color: "#22c55e" }}>
+                <svg width="40" height="40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                <div>Geen overtredingen — volledig conform</div>
+              </div>
             ) : (
-              <div>
-                <div style={{ marginBottom: 12, fontSize: 12, color: "#6b7280" }}>
-                  {violations.length} overtreding{violations.length !== 1 ? "en" : ""} · Reg 561/2006 + Dir 2002/15/EC
-                </div>
+              <>
+                <div className="section-intro">{violations.length} resultaten · Reg 561/2006 + Dir 2002/15/EC + KB 17/10/2016</div>
                 {violations.map((v, i) => (
-                  <div key={i} style={S.vRow}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 4 }}>
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <span style={S.sevBadge(v.severity)}>{v.severity}</span>
-                        <span style={{ fontWeight: 600, color: "#e6edf3" }}>{v.rule}</span>
+                  <div key={i} className="violation-card">
+                    <div className="violation-header">
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <span className="sev-badge" style={{ background: SEV[v.severity]?.color }}>{v.severity}</span>
+                        <span className="violation-rule">{v.rule}</span>
                       </div>
-                      <span style={{ fontSize: 11, color: "#6b7280" }}>{v.date.toLocaleDateString("nl-BE")}</span>
+                      <span className="violation-date">{v.date.toLocaleDateString("nl-BE")}</span>
                     </div>
-                    <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 4 }}>{v.description}</div>
-                    <div style={{ display: "flex", gap: 16, fontSize: 10, color: "#4b5563", flexWrap: "wrap", alignItems: "center" }}>
+                    <div className="violation-desc">{v.description}</div>
+                    <div className="violation-meta">
                       <span>Werkelijk: <b style={{ color: "#ef4444" }}>{v.actual}</b></span>
                       <span>Limiet: <b style={{ color: "#22c55e" }}>{v.limit}</b></span>
-                      <span style={{ color: "#3b82f6" }}>{v.article}</span>
-                      {v.estimatedFine > 0 && <span style={{ color: "#f97316", fontWeight: 600 }}>Boete (BE): {v.estimatedFine.toLocaleString("nl-BE", { style: "currency", currency: "EUR" })}</span>}
+                      <span style={{ color: "#60a5fa" }}>{v.article}</span>
+                      {v.estimatedFine > 0 && <span className="fine-tag">Boete: {v.estimatedFine.toLocaleString("nl-BE", { style: "currency", currency: "EUR" })}</span>}
                     </div>
                   </div>
                 ))}
-              </div>
+              </>
             )}
           </>}
 
-          {/* ── Vehicles tab ───────────────────────────────────────────── */}
+          {/* ── Vehicles ───────────────────────────────────────────── */}
           {tab === "vehicles" && <>
             {data.vehicles?.length > 0 ? (
-              <div style={{ overflowX: "auto" }}>
-                <table style={S.tbl}>
+              <div className="table-wrap">
+                <table className="data-table">
                   <thead><tr>
-                    <th style={S.th}>Registratie</th><th style={S.th}>Land</th><th style={S.th}>Km begin</th><th style={S.th}>Km einde</th><th style={S.th}>Eerste gebruik</th><th style={S.th}>Laatste gebruik</th>
+                    <th>Registratie</th><th>Land</th><th>Km begin</th><th>Km einde</th><th>Eerste gebruik</th><th>Laatste gebruik</th>
                   </tr></thead>
                   <tbody>
                     {data.vehicles.map((v, i) => (
                       <tr key={i}>
-                        <td style={{ ...S.td, fontFamily: "monospace", fontWeight: 600 }}>{v.reg}</td>
-                        <td style={S.td}>{v.nation}</td>
-                        <td style={S.td}>{v.odoBegin.toLocaleString("nl-BE")}</td>
-                        <td style={S.td}>{v.odoEnd < 16777215 ? v.odoEnd.toLocaleString("nl-BE") : "—"}</td>
-                        <td style={S.td}>{v.firstUse?.toLocaleDateString("nl-BE")}</td>
-                        <td style={S.td}>{v.lastUse?.toLocaleDateString("nl-BE") || "—"}</td>
+                        <td className="mono bold">{v.reg}</td>
+                        <td>{v.nation}</td>
+                        <td>{v.odoBegin.toLocaleString("nl-BE")}</td>
+                        <td>{v.odoEnd < 16777215 ? v.odoEnd.toLocaleString("nl-BE") : "—"}</td>
+                        <td>{v.firstUse?.toLocaleDateString("nl-BE")}</td>
+                        <td>{v.lastUse?.toLocaleDateString("nl-BE") || "—"}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            ) : <div style={{ textAlign: "center", padding: 32, color: "#4b5563" }}>Geen voertuiggegevens gevonden</div>}
-
-            {/* Places */}
+            ) : <div className="empty-state">Geen voertuiggegevens</div>}
             {data.places?.length > 0 && <>
-              <div style={S.subHead}>Plaatsen ({data.places.length})</div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={S.tbl}>
-                  <thead><tr>
-                    <th style={S.th}>Datum/tijd</th><th style={S.th}>Type</th><th style={S.th}>Land</th><th style={S.th}>Km</th>
-                  </tr></thead>
-                  <tbody>
-                    {data.places.map((p, i) => (
-                      <tr key={i}>
-                        <td style={S.td}>{p.time.toLocaleString("nl-BE")}</td>
-                        <td style={S.td}>{p.typeLabel}</td>
-                        <td style={S.td}>{p.country}</td>
-                        <td style={S.td}>{p.odometer.toLocaleString("nl-BE")}</td>
-                      </tr>
-                    ))}
-                  </tbody>
+              <h3 className="section-title">Plaatsen ({data.places.length})</h3>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Datum/tijd</th><th>Type</th><th>Land</th><th>Km</th></tr></thead>
+                  <tbody>{data.places.map((p, i) => (
+                    <tr key={i}><td>{p.time.toLocaleString("nl-BE")}</td><td>{p.typeLabel}</td><td>{p.country}</td><td>{p.odometer.toLocaleString("nl-BE")}</td></tr>
+                  ))}</tbody>
                 </table>
               </div>
             </>}
           </>}
 
-          {/* ── Events tab ─────────────────────────────────────────────── */}
+          {/* ── Events ─────────────────────────────────────────────── */}
           {tab === "events" && <>
             {data.events?.length > 0 && <>
-              <div style={S.subHead}>Gebeurtenissen ({data.events.length})</div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={S.tbl}>
-                  <thead><tr>
-                    <th style={S.th}>Type</th><th style={S.th}>Begin</th><th style={S.th}>Einde</th><th style={S.th}>Voertuig</th>
-                  </tr></thead>
-                  <tbody>
-                    {data.events.map((ev, i) => (
-                      <tr key={i}>
-                        <td style={{ ...S.td, color: "#f97316" }}>{ev.typeLabel}</td>
-                        <td style={S.td}>{ev.beginTime.toLocaleString("nl-BE")}</td>
-                        <td style={S.td}>{ev.endTime.toLocaleString("nl-BE")}</td>
-                        <td style={{ ...S.td, fontFamily: "monospace" }}>{ev.vehicleReg}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <h3 className="section-title">Gebeurtenissen ({data.events.length})</h3>
+              <div className="table-wrap"><table className="data-table">
+                <thead><tr><th>Type</th><th>Begin</th><th>Einde</th><th>Voertuig</th></tr></thead>
+                <tbody>{data.events.map((ev, i) => (
+                  <tr key={i}><td style={{ color: "#f97316" }}>{ev.typeLabel}</td><td>{ev.beginTime.toLocaleString("nl-BE")}</td><td>{ev.endTime.toLocaleString("nl-BE")}</td><td className="mono">{ev.vehicleReg}</td></tr>
+                ))}</tbody>
+              </table></div>
             </>}
-
             {data.faults?.length > 0 && <>
-              <div style={S.subHead}>Fouten ({data.faults.length})</div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={S.tbl}>
-                  <thead><tr>
-                    <th style={S.th}>Type</th><th style={S.th}>Begin</th><th style={S.th}>Einde</th><th style={S.th}>Voertuig</th>
-                  </tr></thead>
-                  <tbody>
-                    {data.faults.map((f, i) => (
-                      <tr key={i}>
-                        <td style={{ ...S.td, color: "#ef4444" }}>{f.typeLabel}</td>
-                        <td style={S.td}>{f.beginTime.toLocaleString("nl-BE")}</td>
-                        <td style={S.td}>{f.endTime.toLocaleString("nl-BE")}</td>
-                        <td style={{ ...S.td, fontFamily: "monospace" }}>{f.vehicleReg}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <h3 className="section-title">Fouten ({data.faults.length})</h3>
+              <div className="table-wrap"><table className="data-table">
+                <thead><tr><th>Type</th><th>Begin</th><th>Einde</th><th>Voertuig</th></tr></thead>
+                <tbody>{data.faults.map((f, i) => (
+                  <tr key={i}><td style={{ color: "#ef4444" }}>{f.typeLabel}</td><td>{f.beginTime.toLocaleString("nl-BE")}</td><td>{f.endTime.toLocaleString("nl-BE")}</td><td className="mono">{f.vehicleReg}</td></tr>
+                ))}</tbody>
+              </table></div>
             </>}
-
             {data.conditions?.length > 0 && <>
-              <div style={S.subHead}>Bijzondere voorwaarden ({data.conditions.length})</div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={S.tbl}>
-                  <thead><tr><th style={S.th}>Datum/tijd</th><th style={S.th}>Type</th></tr></thead>
-                  <tbody>
-                    {data.conditions.map((c, i) => (
-                      <tr key={i}>
-                        <td style={S.td}>{c.time.toLocaleString("nl-BE")}</td>
-                        <td style={S.td}>{c.typeLabel}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <h3 className="section-title">Bijzondere voorwaarden ({data.conditions.length})</h3>
+              <div className="table-wrap"><table className="data-table">
+                <thead><tr><th>Datum/tijd</th><th>Type</th></tr></thead>
+                <tbody>{data.conditions.map((c, i) => (
+                  <tr key={i}><td>{c.time.toLocaleString("nl-BE")}</td><td>{c.typeLabel}</td></tr>
+                ))}</tbody>
+              </table></div>
             </>}
-
-            {eventCount === 0 && !data.conditions?.length && (
-              <div style={{ textAlign: "center", padding: 32, color: "#22c55e" }}>Geen gebeurtenissen of fouten geregistreerd</div>
-            )}
+            {eventCount === 0 && !data.conditions?.length && <div className="empty-state" style={{ color: "#22c55e" }}>Geen gebeurtenissen of fouten</div>}
           </>}
 
-          {/* Footer */}
-          <div style={{ marginTop: 24, paddingTop: 12, borderTop: "1px solid #1c2333", fontSize: 9, color: "#4b5563", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 4 }}>
+          {/* ── Footer ─────────────────────────────────────────────── */}
+          <footer className="app-footer">
             <span>Rapport: {new Date().toLocaleString("nl-BE")}</span>
-            <span>TachoViewer · lokale verwerking · Reg 561/2006 + Dir 2002/15/EC</span>
-          </div>
+            <span>TachoViewer · Reg 561/2006 + Dir 2002/15/EC + KB 17/10/2016</span>
+          </footer>
         </>)}
       </div>
     </div>
