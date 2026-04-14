@@ -895,6 +895,555 @@ function checkWTD48hAverage(days, violations) {
 }
 
 // ---------------------------------------------------------------------------
+// Rule 12 — Split break order (Art. 7 Reg 561/2006)
+// When using a split break (instead of a single 45min break), the 15min
+// portion must come BEFORE the 30min portion.
+// ---------------------------------------------------------------------------
+
+function checkSplitBreakOrder(days, violations) {
+  for (const day of days) {
+    const segs = toSegments(day.activities || []);
+    if (!segs.length) continue;
+
+    // Walk through segments accumulating driving. When accumulated driving
+    // exceeds 4h30m, inspect the break segments that preceded the excess to
+    // determine if a split break was attempted and, if so, whether the order
+    // was correct.
+    let accumulatedDriving = 0;
+    const breakSegsSinceReset = []; // break segs >= 15min in current driving period
+    let totalBreakSinceReset = 0;
+
+    for (const seg of segs) {
+      if (seg.act === 3) {
+        accumulatedDriving += seg.dur;
+      } else if ((seg.act === 0 || seg.act === 1) && seg.dur >= 15) {
+        breakSegsSinceReset.push({ dur: seg.dur, start: seg.start });
+        totalBreakSinceReset += seg.dur;
+        if (totalBreakSinceReset >= 45) {
+          // Break period complete — reset
+          accumulatedDriving = 0;
+          breakSegsSinceReset.length = 0;
+          totalBreakSinceReset = 0;
+        }
+      } else if (seg.act === 2) {
+        // Work — not a break, but not driving either; reset break accumulation
+        // but do NOT reset driving (per existing continuous driving logic the
+        // break accumulation resets on non-break).
+        breakSegsSinceReset.length = 0;
+        totalBreakSinceReset = 0;
+      }
+
+      // Check if driving exceeded 4h30 with a split break attempt
+      if (accumulatedDriving > 4 * 60 + 30 && breakSegsSinceReset.length >= 2) {
+        // There were break segments but they didn't total 45min (otherwise we
+        // would have reset). Check if there was a 30-before-15 pattern.
+        const has15 = breakSegsSinceReset.some((b) => b.dur >= 15 && b.dur < 30);
+        const has30 = breakSegsSinceReset.some((b) => b.dur >= 30);
+
+        if (has15 && has30) {
+          const first30 = breakSegsSinceReset.find((b) => b.dur >= 30);
+          const first15 = breakSegsSinceReset.find((b) => b.dur >= 15 && b.dur < 30);
+          if (first30 && first15 && first30.start < first15.start) {
+            // 30min came before 15min — wrong order
+            violations.push({
+              date: day.date,
+              rule: "Split break wrong order",
+              description: `Split break taken in wrong order: 30min portion before 15min portion. The 15min break must come first.`,
+              actual: "30min then 15min",
+              limit: "15min then 30min",
+              severity: "MI",
+              article: "Art. 7 Reg 561/2006",
+            });
+            // Only flag once per day
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 13 — WTD break duration (Art. 5(1) Dir 2002/15/EC)
+// If total work is 6-9h, breaks must total >= 30min.
+// If total work > 9h, breaks must total >= 45min.
+// Only breaks >= 15min count.
+// ---------------------------------------------------------------------------
+
+function checkWTDBreakDuration(days, violations) {
+  for (const day of days) {
+    const segs = toSegments(day.activities || []);
+    if (!segs.length) continue;
+
+    const totalWork = multiActMinutes(segs, [2, 3]); // driving + other work
+    const totalWorkH = totalWork / 60;
+
+    if (totalWorkH < 6) continue; // no requirement
+
+    // Sum breaks >= 15min (rest or availability)
+    let qualifyingBreaks = 0;
+    for (const seg of segs) {
+      if ((seg.act === 0 || seg.act === 1) && seg.dur >= 15) {
+        qualifyingBreaks += seg.dur;
+      }
+    }
+
+    let requiredBreak = 0;
+    if (totalWorkH > 9) {
+      requiredBreak = 45;
+    } else {
+      requiredBreak = 30;
+    }
+
+    const deficit = requiredBreak - qualifyingBreaks;
+    if (deficit <= 0) continue;
+
+    let severity;
+    if (deficit > 30) {
+      severity = "VSI";
+    } else if (deficit > 15) {
+      severity = "SI";
+    } else {
+      severity = "MI";
+    }
+
+    violations.push({
+      date: day.date,
+      rule: "WTD break duration",
+      description: `Total work ${fmtMins(totalWork)} requires ${fmtMins(requiredBreak)} of breaks (segments >= 15min), but only ${fmtMins(qualifyingBreaks)} taken. Missing ${fmtMins(deficit)}.`,
+      actual: fmtMins(qualifyingBreaks),
+      limit: fmtMins(requiredBreak),
+      severity,
+      article: "Art. 5(1) Dir 2002/15/EC",
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 14 — Reduced weekly rest compensation (Art. 8(6b) Reg 561/2006)
+// When a reduced weekly rest (24-45h) is taken, the deficit must be
+// compensated en bloc within 3 weeks, attached to a rest >= 9h.
+// ---------------------------------------------------------------------------
+
+function checkReducedWeeklyRestCompensation(days, violations) {
+  const weeks = groupByWeek(days);
+  const weekKeys = [...weeks.keys()].sort();
+
+  if (weekKeys.length < 2) return; // need multiple weeks to check
+
+  // Compute longest continuous rest per week (reuse logic from checkWeeklyRest)
+  function longestRestInWeek(weekDays) {
+    const wSorted = [...weekDays].sort((a, b) => a.date - b.date);
+
+    // Build rest info per day
+    function dayRestInfo(day) {
+      const segs = toSegments(day.activities || []);
+      if (!segs.length) return { leading: 1440, trailing: 1440, longestInner: 1440 };
+
+      let leading = 0;
+      for (const seg of segs) {
+        if (seg.act === 0) leading += seg.dur;
+        else break;
+      }
+
+      let trailing = 0;
+      for (let i = segs.length - 1; i >= 0; i--) {
+        if (segs[i].act === 0) trailing += segs[i].dur;
+        else break;
+      }
+
+      let longestInner = 0;
+      for (const seg of segs) {
+        if (seg.act === 0 && seg.dur > longestInner) longestInner = seg.dur;
+      }
+
+      return { leading, trailing, longestInner };
+    }
+
+    let longest = 0;
+    const infoMap = new Map();
+    for (const day of wSorted) {
+      const info = dayRestInfo(day);
+      infoMap.set(day.date.getTime(), info);
+      longest = Math.max(longest, info.longestInner);
+    }
+
+    // Cross-day spans
+    for (let i = 0; i < wSorted.length - 1; i++) {
+      const info = infoMap.get(wSorted[i].date.getTime());
+      if (!info) continue;
+      let span = info.trailing;
+      for (let j = i + 1; j < wSorted.length; j++) {
+        const prevDate = wSorted[j - 1].date;
+        const curDate = wSorted[j].date;
+        if (Math.round((curDate - prevDate) / 86400000) !== 1) break;
+        const jInfo = infoMap.get(curDate.getTime());
+        if (!jInfo) break;
+        if (jInfo.leading === 1440) {
+          span += 1440;
+        } else {
+          span += jInfo.leading;
+          break;
+        }
+      }
+      longest = Math.max(longest, span);
+    }
+
+    return longest;
+  }
+
+  // Find weeks with reduced weekly rest and check compensation
+  for (let i = 0; i < weekKeys.length; i++) {
+    const longestRest = longestRestInWeek(weeks.get(weekKeys[i]));
+    const longestRestH = longestRest / 60;
+
+    if (longestRestH >= 24 && longestRestH < 45) {
+      // Reduced weekly rest — deficit must be compensated
+      const deficit = 45 * 60 - longestRest; // in minutes
+      const compensationNeeded = deficit + 9 * 60; // must be attached to >= 9h rest
+
+      // Check next 3 weeks for a rest period >= compensationNeeded
+      let compensated = false;
+      for (let j = i + 1; j <= i + 3 && j < weekKeys.length; j++) {
+        const futureRest = longestRestInWeek(weeks.get(weekKeys[j]));
+        if (futureRest >= compensationNeeded) {
+          compensated = true;
+          break;
+        }
+      }
+
+      if (!compensated) {
+        const firstDate = [...weeks.get(weekKeys[i])].sort((a, b) => a.date - b.date)[0].date;
+        violations.push({
+          date: firstDate,
+          rule: "Reduced weekly rest compensation",
+          description: `Reduced weekly rest of ${fmtMins(longestRest)} in week ${weekKeys[i]}. Deficit of ${fmtMins(deficit)} must be compensated en bloc within 3 weeks (attached to >= 9h rest). Compensation not confirmed in available data.`,
+          actual: fmtMins(longestRest),
+          limit: "45h 00m (regular) — compensation required",
+          severity: "MI",
+          article: "Art. 8(6b) Reg 561/2006",
+        });
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 15 — Belgian night work (KB 17/10/2016 Art. 44)
+// Belgian night period is 00:00-07:00 (wider than generic 00:00-05:00).
+// If any work during 00:00-07:00, total work in that day must not exceed 10h.
+// ---------------------------------------------------------------------------
+
+function checkBelgianNightWork(days, violations) {
+  const NIGHT_START = 0;      // 00:00 in minutes
+  const NIGHT_END = 7 * 60;   // 07:00 = 420 minutes
+
+  for (const day of days) {
+    const segs = toSegments(day.activities || []);
+    if (!segs.length) continue;
+
+    // Check if any work (act 2 or 3) overlaps with the Belgian night period
+    let hasNightWork = false;
+    for (const seg of segs) {
+      if ((seg.act === 2 || seg.act === 3) && seg.start < NIGHT_END && seg.end > NIGHT_START) {
+        hasNightWork = true;
+        break;
+      }
+    }
+
+    if (!hasNightWork) continue;
+
+    const totalWork = multiActMinutes(segs, [2, 3]);
+    const totalH = totalWork / 60;
+
+    if (totalH > 13) {
+      violations.push({
+        date: day.date,
+        rule: "Belgian night work daily limit",
+        description: `Belgian night worker (00:00-07:00): total working time ${fmtMins(totalWork)} exceeds 13h (limit 10h).`,
+        actual: fmtMins(totalWork),
+        limit: "10h 00m",
+        severity: "VSI",
+        article: "Art. 44 KB 17/10/2016",
+      });
+    } else if (totalH > 11) {
+      violations.push({
+        date: day.date,
+        rule: "Belgian night work daily limit",
+        description: `Belgian night worker (00:00-07:00): total working time ${fmtMins(totalWork)} exceeds 11h (limit 10h).`,
+        actual: fmtMins(totalWork),
+        limit: "10h 00m",
+        severity: "SI",
+        article: "Art. 44 KB 17/10/2016",
+      });
+    } else if (totalH > 10) {
+      violations.push({
+        date: day.date,
+        rule: "Belgian night work daily limit",
+        description: `Belgian night worker (00:00-07:00): total working time ${fmtMins(totalWork)} exceeds 10h (limit 10h).`,
+        actual: fmtMins(totalWork),
+        limit: "10h 00m",
+        severity: "MI",
+        article: "Art. 44 KB 17/10/2016",
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 16 — Belgian night premium (PC 140.03)
+// Track shifts where >5h of work+availability falls within 20:00-06:00.
+// Informational only — not a violation.
+// ---------------------------------------------------------------------------
+
+function checkBelgianNightPremium(days, violations) {
+  // Night premium window: 20:00 (1200min) to 06:00 next day (1440 + 360 = 1800,
+  // but within a single day's 0-1440 range: 0-360 and 1200-1440)
+  const WINDOW_EVENING_START = 20 * 60; // 1200 min
+  const WINDOW_MORNING_END = 6 * 60;    // 360 min
+
+  for (const day of days) {
+    const segs = toSegments(day.activities || []);
+    if (!segs.length) continue;
+
+    // Calculate overlap of work+availability (acts 1, 2, 3) with 20:00-06:00
+    let nightMinutes = 0;
+    for (const seg of segs) {
+      if (seg.act === 1 || seg.act === 2 || seg.act === 3) {
+        // Morning window: 00:00-06:00
+        if (seg.start < WINDOW_MORNING_END && seg.end > 0) {
+          const overlapStart = Math.max(seg.start, 0);
+          const overlapEnd = Math.min(seg.end, WINDOW_MORNING_END);
+          if (overlapEnd > overlapStart) nightMinutes += overlapEnd - overlapStart;
+        }
+        // Evening window: 20:00-24:00
+        if (seg.start < 1440 && seg.end > WINDOW_EVENING_START) {
+          const overlapStart = Math.max(seg.start, WINDOW_EVENING_START);
+          const overlapEnd = Math.min(seg.end, 1440);
+          if (overlapEnd > overlapStart) nightMinutes += overlapEnd - overlapStart;
+        }
+      }
+    }
+
+    if (nightMinutes > 5 * 60) {
+      violations.push({
+        date: day.date,
+        rule: "Belgian night premium applicable",
+        description: `Nachtpremie van toepassing — meer dan 5 uur werk/beschikbaarheid tussen 20:00-06:00 (${fmtMins(nightMinutes)}).`,
+        actual: fmtMins(nightMinutes),
+        limit: "> 5h 00m in 20:00-06:00",
+        severity: "INFO",
+        article: "PC 140.03 Nachtpremie",
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 17 — Belgian download deadline (KB 17/10/2016 Art. 34)
+// Belgian driver card must be downloaded every 21 days (not EU 28).
+// ---------------------------------------------------------------------------
+
+function checkBelgianDownloadDeadline(days, violations) {
+  if (!days.length) return;
+
+  const sorted = [...days].sort((a, b) => a.date - b.date);
+  const lastDayDate = sorted[sorted.length - 1].date;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const diffMs = today.getTime() - lastDayDate.getTime();
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffDays <= 21) return;
+
+  const overdue = diffDays - 21;
+
+  let severity;
+  if (overdue > 14) {
+    // > 35 days total (overdue > 14 means diffDays > 35)
+    severity = "VSI";
+  } else if (overdue > 4) {
+    // 26-35 days total (overdue 5-14 means diffDays 26-35)
+    severity = "SI";
+  } else {
+    // 22-25 days total (overdue 1-4 means diffDays 22-25)
+    severity = "MI";
+  }
+
+  violations.push({
+    date: lastDayDate,
+    rule: "Belgian card download deadline",
+    description: `Driver card data is ${diffDays} days old (last day: ${lastDayDate.toISOString().slice(0, 10)}). Belgian limit is 21 days. ${overdue} days overdue.`,
+    actual: `${diffDays} days`,
+    limit: "21 days",
+    severity,
+    article: "Art. 34 KB 17/10/2016",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Belgian fine estimation (KB 8/12/2024)
+// Estimates Belgian fines for existing violations. Adds `estimatedFine` field.
+// ---------------------------------------------------------------------------
+
+function estimateBelgianFine(violation) {
+  const rule = violation.rule || "";
+  const severity = violation.severity || "";
+
+  // --- Continuous driving excess ---
+  if (rule === "Continuous driving without break") {
+    // Parse actual driving from the violation
+    const actualMinutes = parseMinutesFromFmt(violation.actual);
+    const excess = actualMinutes - (4 * 60 + 30); // excess over 4h30m
+    if (excess <= 15) return 44;
+    if (excess <= 60) return 132;
+    if (excess <= 120) return 264;
+    if (excess <= 180) return 440;
+    if (excess <= 300) return 660;
+    return 1100;
+  }
+
+  // --- Daily driving excess ---
+  if (rule === "Daily driving limit") {
+    const actualMinutes = parseMinutesFromFmt(violation.actual);
+    const excess = actualMinutes - 9 * 60; // excess over 9h base limit
+    if (excess <= 30) return 88;
+    if (excess <= 60) return 176;
+    if (excess <= 120) return 352;
+    if (excess <= 180) return 528;
+    return 880;
+  }
+
+  // --- Weekly driving excess ---
+  if (rule === "Weekly driving limit") {
+    const actualMinutes = parseMinutesFromFmt(violation.actual);
+    const excess = actualMinutes - 56 * 60; // excess over 56h
+    const commencedHours = Math.ceil(excess / 60);
+    return commencedHours * 110;
+  }
+
+  // --- Fortnightly driving excess ---
+  if (rule === "Fortnightly driving limit") {
+    const actualMinutes = parseMinutesFromFmt(violation.actual);
+    const excess = actualMinutes - 90 * 60;
+    const commencedHours = Math.ceil(excess / 60);
+    return commencedHours * 110;
+  }
+
+  // --- Insufficient daily rest ---
+  if (rule === "Insufficient daily rest" || rule === "Insufficient daily rest (excess reduced rests)") {
+    const actualMinutes = parseMinutesFromFmt(violation.actual);
+    // Required minimum depends on context, use 9h as base for reduced
+    const required = rule.includes("excess") ? 11 * 60 : 9 * 60;
+    const deficit = required - actualMinutes;
+    if (deficit <= 0) return 0;
+    const blocks = Math.ceil(deficit / 30); // per missing 30-min block
+    return blocks * 55;
+  }
+
+  // --- Insufficient weekly rest ---
+  if (rule === "Insufficient weekly rest" || rule === "No regular weekly rest in 2 consecutive weeks") {
+    const actualMinutes = parseMinutesFromFmt(violation.actual);
+    const deficit = 45 * 60 - actualMinutes;
+    if (deficit <= 0) return 0;
+    const missingHours = Math.ceil(deficit / 60);
+    return missingHours * 110;
+  }
+
+  // --- 6-day rule ---
+  if (rule === "6-day rule (weekly rest overdue)") {
+    // Treat similarly to weekly rest
+    return 110;
+  }
+
+  // --- Weekly rest in vehicle (if detected in description) ---
+  if (rule.toLowerCase().includes("weekly rest") && (violation.description || "").toLowerCase().includes("vehicle")) {
+    return 1800;
+  }
+
+  // --- WTD violations: €110 per commenced hour over limit ---
+  if (rule.includes("WTD") || rule.includes("working time") || rule.includes("Continuous work") || rule.includes("Night work")) {
+    const actualMinutes = parseMinutesFromFmt(violation.actual);
+    let limitMinutes = 0;
+
+    if (rule.includes("48h average")) {
+      limitMinutes = 48 * 60;
+    } else if (rule.includes("Weekly working time")) {
+      limitMinutes = 60 * 60;
+    } else if (rule.includes("Continuous work")) {
+      limitMinutes = 6 * 60;
+    } else if (rule.includes("Night work") || rule.includes("night work")) {
+      limitMinutes = 10 * 60;
+    } else if (rule.includes("WTD break duration")) {
+      // For break duration violations, fine based on deficit
+      const limitBreak = parseMinutesFromFmt(violation.limit);
+      const actualBreak = parseMinutesFromFmt(violation.actual);
+      const deficit = limitBreak - actualBreak;
+      const commencedHours = Math.ceil(deficit / 60);
+      return Math.max(commencedHours, 1) * 110;
+    }
+
+    if (limitMinutes > 0) {
+      const excess = actualMinutes - limitMinutes;
+      if (excess <= 0) return 110; // minimum
+      const commencedHours = Math.ceil(excess / 60);
+      return commencedHours * 110;
+    }
+  }
+
+  // --- Belgian-specific violations ---
+  if (rule.includes("Belgian night work")) {
+    const actualMinutes = parseMinutesFromFmt(violation.actual);
+    const excess = actualMinutes - 10 * 60;
+    if (excess <= 0) return 110;
+    const commencedHours = Math.ceil(excess / 60);
+    return commencedHours * 110;
+  }
+
+  if (rule.includes("Belgian card download")) {
+    // Fine based on severity tiers
+    if (severity === "VSI") return 440;
+    if (severity === "SI") return 220;
+    return 110;
+  }
+
+  // --- Split break order ---
+  if (rule === "Split break wrong order") {
+    return 44;
+  }
+
+  // --- Reduced weekly rest compensation ---
+  if (rule === "Reduced weekly rest compensation") {
+    return 110;
+  }
+
+  // INFO-level items have no fine
+  if (severity === "INFO") return 0;
+
+  // Fallback: no estimate available
+  return 0;
+}
+
+/** Parse "Xh YYm" format back to minutes. */
+function parseMinutesFromFmt(str) {
+  if (!str || typeof str !== "string") return 0;
+  const match = str.match(/(\d+)h\s*(\d+)m/);
+  if (match) return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+  // Try just hours
+  const hMatch = str.match(/(\d+)h/);
+  if (hMatch) return parseInt(hMatch[1], 10) * 60;
+  return 0;
+}
+
+/** Add estimatedFine to all violations in the array. */
+function checkBelgianFineEstimate(violations) {
+  for (const v of violations) {
+    v.estimatedFine = estimateBelgianFine(v);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -921,13 +1470,22 @@ function checkCompliance(days) {
   checkContinuousWork(sorted, violations);
   checkNightWork(sorted, violations);
   checkWTD48hAverage(sorted, violations);
+  checkSplitBreakOrder(sorted, violations);
+  checkWTDBreakDuration(sorted, violations);
+  checkReducedWeeklyRestCompensation(sorted, violations);
+  checkBelgianNightWork(sorted, violations);
+  checkBelgianNightPremium(sorted, violations);
+  checkBelgianDownloadDeadline(sorted, violations);
+
+  // Add Belgian fine estimates to all violations (must run after all checks)
+  checkBelgianFineEstimate(violations);
 
   // Sort: by date ascending, then by severity (most severe first)
-  const severityOrder = { MSI: 0, VSI: 1, SI: 2, MI: 3 };
+  const severityOrder = { MSI: 0, VSI: 1, SI: 2, MI: 3, INFO: 4 };
   violations.sort((a, b) => {
     const dateDiff = a.date - b.date;
     if (dateDiff !== 0) return dateDiff;
-    return (severityOrder[a.severity] ?? 4) - (severityOrder[b.severity] ?? 4);
+    return (severityOrder[a.severity] ?? 5) - (severityOrder[b.severity] ?? 5);
   });
 
   return violations;

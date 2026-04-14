@@ -11,10 +11,11 @@ const ACT = {
 };
 
 const SEV = {
-  MSI: { color: "#dc2626", bg: "#fef2f2", label: "Zeer Ernstig+" },
-  VSI: { color: "#ea580c", bg: "#fff7ed", label: "Zeer Ernstig" },
-  SI:  { color: "#d97706", bg: "#fffbeb", label: "Ernstig" },
-  MI:  { color: "#6b7280", bg: "#f9fafb", label: "Gering" },
+  MSI:  { color: "#dc2626", bg: "#fef2f2", label: "Zeer Ernstig+" },
+  VSI:  { color: "#ea580c", bg: "#fff7ed", label: "Zeer Ernstig" },
+  SI:   { color: "#d97706", bg: "#fffbeb", label: "Ernstig" },
+  MI:   { color: "#6b7280", bg: "#f9fafb", label: "Gering" },
+  INFO: { color: "#3b82f6", bg: "#eff6ff", label: "Info" },
 };
 
 const NATIONS = {1:"A",2:"AL",3:"AND",4:"AM",5:"AZ",6:"B",7:"BG",8:"BA",9:"BY",10:"CH",11:"CY",12:"CZ",13:"D",14:"DK",15:"E",16:"EST",17:"F",18:"FIN",19:"FL",20:"FO",21:"UK",22:"GE",23:"GR",24:"H",25:"HR",26:"I",27:"IRL",28:"IS",29:"KZ",30:"L",31:"LT",32:"LV",33:"M",34:"MC",35:"MD",36:"MK",37:"MN",38:"N",39:"NL",40:"P",41:"PL",42:"RO",43:"RSM",44:"RUS",45:"S",46:"SK",47:"SLO",48:"TM",49:"TR",50:"UA",51:"V",52:"YU"};
@@ -157,6 +158,19 @@ function parseConditions(buffer) {
   return conditions;
 }
 
+function decodeName(buffer, offset, length) {
+  if (!buffer || offset + length > buffer.byteLength) return "";
+  const codePage = new Uint8Array(buffer)[offset];
+  const textBytes = new Uint8Array(buffer, offset + 1, length - 1);
+  const encodings = { 0x01: "iso-8859-1", 0x02: "iso-8859-2", 0x05: "iso-8859-5", 0x07: "iso-8859-7", 0x80: "utf-8" };
+  const enc = encodings[codePage] || "iso-8859-1";
+  try {
+    return new TextDecoder(enc).decode(textBytes).replace(/\0/g, "").trim();
+  } catch {
+    return new TextDecoder("iso-8859-1").decode(textBytes).replace(/\0/g, "").trim();
+  }
+}
+
 function parseDDD(buffer) {
   const efs = walkTLV(buffer);
   const dec = new TextDecoder("latin1");
@@ -165,13 +179,24 @@ function parseDDD(buffer) {
   if (idBuf && idBuf.byteLength >= 103) {
     const v = new DataView(idBuf);
     cardNumber = dec.decode(new Uint8Array(idBuf, 1, 16)).replace(/\0/g, "").trim();
-    cardIssuer = dec.decode(new Uint8Array(idBuf, 17, 36)).replace(/\0/g, "").trim();
+    cardIssuer = decodeName(idBuf, 17, 36);
     const expiryTs = v.getUint32(61, false);
     if (expiryTs > 0 && expiryTs < 4294967295) cardExpiry = new Date(expiryTs * 1000);
-    const sur = dec.decode(new Uint8Array(idBuf, 66, 35)).replace(/\0/g, "").trim();
-    const fst = dec.decode(new Uint8Array(idBuf, 102, 35)).replace(/\0/g, "").trim();
+    const sur = decodeName(idBuf, 65, 36);
+    const fst = decodeName(idBuf, 101, 36);
     name = [fst, sur].filter(Boolean).join(" ");
   }
+  let birthDate = null;
+  if (idBuf && idBuf.byteLength >= 141) {
+    const bd = new Uint8Array(idBuf, 137, 4);
+    const y = ((bd[0] >> 4) * 10 + (bd[0] & 0x0F)) * 100 + (bd[1] >> 4) * 10 + (bd[1] & 0x0F);
+    const m = (bd[2] >> 4) * 10 + (bd[2] & 0x0F);
+    const d = (bd[3] >> 4) * 10 + (bd[3] & 0x0F);
+    if (y > 1900 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      birthDate = `${String(d).padStart(2,"0")}/${String(m).padStart(2,"0")}/${y}`;
+    }
+  }
+
   const actBuf = efs[0x0504] || efs[0x0505];
   if (!actBuf) throw new Error("Geen activiteitsdata gevonden — geldig rijkaart .ddd bestand?");
   const vehBuf = efs[0x0504] ? efs[0x0505] : efs[0x0506];
@@ -181,7 +206,46 @@ function parseDDD(buffer) {
   const places = parsePlaces(efs[0x0506], dec);
   const { licenceNumber, licenceAuthority } = parseLicence(efs[0x0521], dec);
   const conditions = parseConditions(efs[0x0522]);
-  return { days: parseActivity(actBuf), name, cardNumber, cardIssuer, cardExpiry, vehicles, events, faults, places, licenceNumber, licenceAuthority, conditions };
+
+  let currentUsage = null;
+  const cuBuf = efs[0x0507];
+  if (cuBuf && cuBuf.byteLength >= 19) {
+    const cuView = new DataView(cuBuf);
+    const openTs = cuView.getUint32(0, false);
+    if (openTs > 946684800 && openTs < 4294967295) {
+      const nation = cuView.getUint8(4);
+      const regNum = dec.decode(new Uint8Array(cuBuf, 6, 13)).replace(/\0/g, "").trim();
+      currentUsage = {
+        sessionStart: new Date(openTs * 1000),
+        vehicle: (NATIONS[nation] || "") + (regNum ? "-" + regNum : ""),
+      };
+    }
+  }
+
+  let lastControl = null;
+  const ctrlBuf = efs[0x0508];
+  if (ctrlBuf && ctrlBuf.byteLength >= 46) {
+    const ctrlView = new DataView(ctrlBuf);
+    const ctrlType = ctrlView.getUint8(0);
+    const ctrlTs = ctrlView.getUint32(1, false);
+    if (ctrlTs > 946684800 && ctrlTs < 4294967295) {
+      const ctrlCardNation = ctrlView.getUint8(5);
+      const ctrlCardNum = dec.decode(new Uint8Array(ctrlBuf, 6, 16)).replace(/\0/g, "").trim();
+      const dlBeginTs = ctrlView.getUint32(37, false);
+      const dlEndTs = ctrlView.getUint32(41, false);
+      const ctrlTypes = ["Kaartdownload", "Weergave", "Afdrukken", "VU-download"];
+      lastControl = {
+        type: ctrlType,
+        typeLabel: ctrlTypes[ctrlType] || String(ctrlType),
+        time: new Date(ctrlTs * 1000),
+        controllerCard: ctrlCardNum,
+        downloadPeriodBegin: dlBeginTs > 0 ? new Date(dlBeginTs * 1000) : null,
+        downloadPeriodEnd: dlEndTs > 0 ? new Date(dlEndTs * 1000) : null,
+      };
+    }
+  }
+
+  return { days: parseActivity(actBuf), name, cardNumber, cardIssuer, cardExpiry, vehicles, events, faults, places, licenceNumber, licenceAuthority, conditions, currentUsage, lastControl, birthDate };
 }
 
 function parseVehicles(buffer, dec) {
@@ -299,7 +363,7 @@ export default function App() {
   const eventCount = (data?.events?.length || 0) + (data?.faults?.length || 0);
 
   const sevCounts = useMemo(() => {
-    const c = { MSI: 0, VSI: 0, SI: 0, MI: 0 };
+    const c = { MSI: 0, VSI: 0, SI: 0, MI: 0, INFO: 0 };
     violations.forEach(v => { if (c[v.severity] !== undefined) c[v.severity]++; });
     return c;
   }, [violations]);
@@ -368,6 +432,7 @@ export default function App() {
             <div style={{ fontSize: 22, fontWeight: 700, color: "#e6edf3" }}>{data.name}</div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>
               {days.length} dagrecords · {days[0]?.date.toLocaleDateString("nl-BE")} → {days[days.length - 1]?.date.toLocaleDateString("nl-BE")}
+              {data.birthDate && <span> · Geb. {data.birthDate}</span>}
               {data.licenceNumber && <span> · Rijbewijs {data.licenceNumber}</span>}
             </div>
           </div>
@@ -387,20 +452,29 @@ export default function App() {
                 <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>{v.odoBegin.toLocaleString("nl-BE")} → {v.odoEnd < 16777215 ? v.odoEnd.toLocaleString("nl-BE") : "—"} km</div>
               </div>
             ))}
+            {/* Compliance badge */}
             <div style={{ ...S.card, borderColor: violations.length ? "#7f1d1d" : "#14532d" }}>
               <div style={{ fontSize: 9, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Naleving</div>
-              {violations.length === 0
+              {violations.filter(v => v.severity !== "INFO").length === 0
                 ? <div style={{ fontSize: 14, fontWeight: 700, color: "#22c55e" }}>Conform</div>
                 : <div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "#ef4444", marginBottom: 4 }}>{violations.length} overtreding{violations.length !== 1 ? "en" : ""}</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#ef4444", marginBottom: 4 }}>{violations.filter(v => v.severity !== "INFO").length} overtreding{violations.filter(v => v.severity !== "INFO").length !== 1 ? "en" : ""}</div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {Object.entries(sevCounts).filter(([,c]) => c > 0).map(([sev, c]) => (
+                      {Object.entries(sevCounts).filter(([k,c]) => c > 0 && k !== "INFO").map(([sev, c]) => (
                         <span key={sev} style={S.sevBadge(sev)}>{c}× {sev}</span>
                       ))}
                     </div>
+                    {(() => { const totalFine = violations.reduce((s, v) => s + (v.estimatedFine || 0), 0); return totalFine > 0 ? <div style={{ fontSize: 10, color: "#f97316", marginTop: 4 }}>Geschatte boete (BE): {totalFine.toLocaleString("nl-BE", { style: "currency", currency: "EUR" })}</div> : null; })()}
                   </div>
               }
             </div>
+            {/* Last control */}
+            {data.lastControl && <div style={S.card}>
+              <div style={{ fontSize: 9, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Laatste controle</div>
+              <div style={{ fontSize: 12, color: "#e6edf3" }}>{data.lastControl.typeLabel}</div>
+              <div style={{ fontSize: 10, color: "#6b7280" }}>{data.lastControl.time.toLocaleDateString("nl-BE")}</div>
+              {data.lastControl.controllerCard && <div style={{ fontSize: 10, color: "#6b7280", fontFamily: "monospace" }}>{data.lastControl.controllerCard}</div>}
+            </div>}
           </div>
 
           {/* Stats */}
@@ -487,10 +561,11 @@ export default function App() {
                       <span style={{ fontSize: 11, color: "#6b7280" }}>{v.date.toLocaleDateString("nl-BE")}</span>
                     </div>
                     <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 4 }}>{v.description}</div>
-                    <div style={{ display: "flex", gap: 16, fontSize: 10, color: "#4b5563", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: 16, fontSize: 10, color: "#4b5563", flexWrap: "wrap", alignItems: "center" }}>
                       <span>Werkelijk: <b style={{ color: "#ef4444" }}>{v.actual}</b></span>
                       <span>Limiet: <b style={{ color: "#22c55e" }}>{v.limit}</b></span>
                       <span style={{ color: "#3b82f6" }}>{v.article}</span>
+                      {v.estimatedFine > 0 && <span style={{ color: "#f97316", fontWeight: 600 }}>Boete (BE): {v.estimatedFine.toLocaleString("nl-BE", { style: "currency", currency: "EUR" })}</span>}
                     </div>
                   </div>
                 ))}
