@@ -332,6 +332,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [drag, setDrag] = useState(false);
   const [tab, setTab] = useState("activities");
+  const [showLegal, setShowLegal] = useState(null); // "privacy" | "terms" | null
   const inputRef = useRef();
 
   const violations = useMemo(() => data?.days ? checkCompliance(data.days) : [], [data]);
@@ -412,6 +413,11 @@ export default function App() {
             <div style={{ color: "#64748b", marginBottom: 20 }}>of klik om te selecteren</div>
             <div className="dropzone-formats">.ddd .esm .tgd .add</div>
             <div style={{ fontSize: 11, color: "#475569", marginTop: 16 }}>🔒 Verwerking volledig in je browser — geen data wordt verstuurd</div>
+            <div style={{ fontSize: 10, color: "#334155", marginTop: 12, maxWidth: 480, margin: "12px auto 0", lineHeight: 1.5 }}>
+              TachoViewer is een hulpmiddel en geen gecertificeerd compliance-instrument. Gebruik op eigen risico.
+              {" "}<button className="link-btn" onClick={e => { e.stopPropagation(); setShowLegal("privacy"); }}>Privacybeleid</button>
+              {" · "}<button className="link-btn" onClick={e => { e.stopPropagation(); setShowLegal("terms"); }}>Gebruiksvoorwaarden</button>
+            </div>
           </div>
         )}
         {err && <div className="error-banner">⚠ {err}</div>}
@@ -642,8 +648,93 @@ export default function App() {
             <span>Rapport: {new Date().toLocaleString("nl-BE")}</span>
             <span>TachoViewer · Reg 561/2006 + Dir 2002/15/EC + KB 17/10/2016</span>
           </footer>
+          <div className="disclaimer">
+            TachoViewer is een hulpmiddel en geen gecertificeerd compliance-instrument. Resultaten zijn indicatief — gebruik op eigen risico.
+            Geen data wordt opgeslagen, verstuurd of verwerkt buiten uw browser.
+            {" "}<button className="link-btn" onClick={() => setShowLegal("privacy")}>Privacybeleid</button>
+            {" · "}<button className="link-btn" onClick={() => setShowLegal("terms")}>Gebruiksvoorwaarden</button>
+          </div>
         </>)}
       </div>
+
+      {/* ── Legal modal ────────────────────────────────────────────── */}
+      {showLegal && (
+        <div className="modal-overlay" onClick={() => setShowLegal(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>{showLegal === "privacy" ? "Privacybeleid" : "Gebruiksvoorwaarden"}</h2>
+              <button className="modal-close" onClick={() => setShowLegal(null)}>x</button>
+            </div>
+            <div className="modal-body">
+              {showLegal === "privacy" ? (<>
+                <h3>Privacybeleid TachoViewer</h3>
+                <p><em>Laatst bijgewerkt: {new Date().toLocaleDateString("nl-BE")}</em></p>
+
+                <h4>1. Geen gegevensverwerking op servers</h4>
+                <p>TachoViewer verwerkt uw tachograafbestanden <strong>volledig in uw browser</strong>. Geen enkel gegeven — namen, kaartnummers, rijgegevens, locaties of andere persoonlijke informatie — wordt verstuurd naar, opgeslagen op of verwerkt door onze servers of servers van derden. Uw .ddd-bestanden verlaten uw apparaat niet.</p>
+
+                <h4>2. Geen opslag van gegevens</h4>
+                <p>TachoViewer slaat geen gegevens op in cookies, localStorage, IndexedDB of enige andere vorm van lokale of externe opslag. Wanneer u het tabblad of de browser sluit, zijn alle verwerkte gegevens onherroepelijk verdwenen.</p>
+
+                <h4>3. Geen cookies of tracking</h4>
+                <p>TachoViewer plaatst geen cookies en maakt geen gebruik van analytics, tracking pixels, fingerprinting of andere vormen van gebruikersmonitoring. Er worden geen externe advertentiediensten geladen.</p>
+
+                <h4>4. Externe bronnen</h4>
+                <p>De applicatie laadt het lettertype "Inter" en "JetBrains Mono" via Google Fonts. Dit is de enige externe verbinding die de applicatie maakt. Er worden geen persoonlijke gegevens gedeeld met Google via dit verzoek.</p>
+
+                <h4>5. Persoonsgegevens in tachograafbestanden</h4>
+                <p>Tachograafbestanden bevatten persoonsgegevens in de zin van de AVG (Algemene Verordening Gegevensbescherming / GDPR), waaronder naam, geboortedatum, kaartnummer, rijgedrag en mogelijk GPS-locaties. Als werkgever of vervoerder bent u de verwerkingsverantwoordelijke voor deze gegevens. TachoViewer fungeert niet als verwerker aangezien er geen gegevens worden overgedragen.</p>
+
+                <h4>6. Privacy by Design</h4>
+                <p>De architectuur van TachoViewer — volledige client-side verwerking zonder server-communicatie — is een implementatie van "Privacy by Design" conform artikel 25 AVG. Dit biedt het hoogste niveau van gegevensbescherming door gegevensminimalisatie: er worden simpelweg geen gegevens verzameld.</p>
+
+                <h4>7. Rechten van betrokkenen</h4>
+                <p>Aangezien TachoViewer geen persoonsgegevens verwerkt of opslaat, zijn de rechten op inzage, rectificatie, wissing en overdraagbaarheid (artikelen 15-20 AVG) niet van toepassing op de werking van deze tool. De verwerkingsverantwoordelijke (uw werkgever/vervoerder) blijft verantwoordelijk voor de bronbestanden.</p>
+
+                <h4>8. Contact</h4>
+                <p>Voor vragen over dit privacybeleid kunt u contact opnemen via het GitHub-repository van TachoViewer.</p>
+              </>) : (<>
+                <h3>Gebruiksvoorwaarden TachoViewer</h3>
+                <p><em>Laatst bijgewerkt: {new Date().toLocaleDateString("nl-BE")}</em></p>
+
+                <h4>1. Aard van de dienst</h4>
+                <p>TachoViewer is een gratis, browser-gebaseerd hulpmiddel voor het inlezen en analyseren van digitale tachograafbestanden (.ddd). De tool biedt een indicatieve analyse van rij- en rusttijden op basis van EU-Verordening (EG) nr. 561/2006, Richtlijn 2002/15/EG en Belgische wetgeving (KB 17/10/2016, KB 8/12/2024).</p>
+
+                <h4>2. Geen gecertificeerd instrument</h4>
+                <p><strong>TachoViewer is geen gecertificeerd, goedgekeurd of officieel compliance-instrument.</strong> De resultaten zijn uitsluitend indicatief en mogen niet worden beschouwd als juridisch advies of als bewijs van naleving. TachoViewer vervangt geen professioneel advies van een transportjurist, erkend tachograaf-workshop of bevoegde autoriteit.</p>
+
+                <h4>3. Gebruik op eigen risico</h4>
+                <p>Het gebruik van TachoViewer geschiedt volledig op eigen risico. De ontwikkelaar aanvaardt geen enkele aansprakelijkheid voor:</p>
+                <ul>
+                  <li>Onjuiste, onvolledige of misleidende analyseresultaten</li>
+                  <li>Boetes, sancties of andere gevolgen die voortvloeien uit beslissingen gebaseerd op de output van TachoViewer</li>
+                  <li>Schade door het niet detecteren van overtredingen</li>
+                  <li>Onjuiste berekeningen van geschatte boetebedragen</li>
+                  <li>Technische fouten bij het inlezen van bestanden</li>
+                </ul>
+
+                <h4>4. Geschatte boetebedragen</h4>
+                <p>De Belgische boetebedragen getoond door TachoViewer zijn schattingen gebaseerd op de boetecatalogus van KB 8 december 2024. Werkelijke boetes kunnen afwijken door omstandigheden, cumulatieregels, het oordeel van de controleur of wetswijzigingen. Deze bedragen hebben geen juridische waarde.</p>
+
+                <h4>5. Nauwkeurigheid van analyses</h4>
+                <p>TachoViewer analyseert uitsluitend de gegevens die aanwezig zijn op de bestuurderskaart. De tool heeft geen toegang tot voertuigeenheidgegevens, handmatige invoer, attesten van activiteiten of gegevens van andere bestuurderskaarten. Dit kan leiden tot onvolledige analyses, met name bij multi-manning, verdeelde rusttijden over meerdere voertuigen, of perioden zonder kaartgebruik.</p>
+
+                <h4>6. Belgische regelgeving</h4>
+                <p>De Belgische compliance-controles zijn gebaseerd op de wetgeving zoals bekend op het moment van ontwikkeling. Regelgeving wijzigt regelmatig. Het is de verantwoordelijkheid van de gebruiker om te verifi&euml;ren dat de getoonde regels overeenkomen met de actueel geldende wetgeving.</p>
+
+                <h4>7. Intellectueel eigendom</h4>
+                <p>TachoViewer is open-source software. De broncode is beschikbaar via GitHub. Gebruik, wijziging en distributie zijn toegestaan conform de van toepassing zijnde licentie.</p>
+
+                <h4>8. Wijzigingen</h4>
+                <p>Deze voorwaarden kunnen zonder voorafgaande kennisgeving worden gewijzigd. Voortgezet gebruik van TachoViewer na wijziging geldt als aanvaarding van de gewijzigde voorwaarden.</p>
+
+                <h4>9. Toepasselijk recht</h4>
+                <p>Op deze voorwaarden is het Belgisch recht van toepassing. Geschillen vallen onder de exclusieve bevoegdheid van de rechtbanken van Brussel.</p>
+              </>)}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
