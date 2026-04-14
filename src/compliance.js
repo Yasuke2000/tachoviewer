@@ -369,6 +369,29 @@ function checkDailyRest(days, violations) {
       continue;
     }
 
+    // Rule 9 — Split daily rest check (Art. 8(2) Reg 561/2006)
+    // Before flagging a violation for <11h longest rest, check if there is a
+    // valid 3h + 9h split pattern (any rest >= 3h followed later by a rest >= 9h,
+    // totaling >= 12h within the same 24h period).
+    const restSegs = segs.filter((s) => s.act === 0);
+    let splitRestCompliant = false;
+    for (let i = 0; i < restSegs.length; i++) {
+      if (restSegs[i].dur >= 3 * 60) {
+        for (let j = i + 1; j < restSegs.length; j++) {
+          if (restSegs[j].dur >= 9 * 60 && restSegs[i].dur + restSegs[j].dur >= 12 * 60) {
+            splitRestCompliant = true;
+            break;
+          }
+        }
+      }
+      if (splitRestCompliant) break;
+    }
+
+    if (splitRestCompliant) {
+      // Compliant via split daily rest (3h + 9h)
+      continue;
+    }
+
     if (longestRest >= 9 * 60) {
       // Reduced daily rest
       reducedRestCount++;
@@ -516,6 +539,361 @@ function checkContinuousWork(days, violations) {
   }
 }
 
+/**
+ * Rule 8 — Weekly rest (Art. 8(6) Reg 561/2006)
+ *
+ * Regular weekly rest: >= 45 consecutive hours. Reduced: >= 24 consecutive hours.
+ * Weekly rest must start no later than end of 6x24h periods from previous weekly rest.
+ * At least one regular (>= 45h) weekly rest every 2 consecutive weeks.
+ *
+ * v1 simplification: per calendar week, find the longest rest period (including
+ * cross-day spans) and check it meets 24h minimum.
+ */
+function checkWeeklyRest(days, violations) {
+  const weeks = groupByWeek(days);
+  const sorted = [...days].sort((a, b) => a.date - b.date);
+
+  // --- Build cross-day continuous rest spans for the entire dataset ---
+  // For each day, compute trailing rest (rest at end of day) and leading rest
+  // (rest at start of day).  Adjacent days contribute to a continuous rest span.
+  function dayRestInfo(day) {
+    const segs = toSegments(day.activities || []);
+    if (!segs.length) return { leading: 1440, trailing: 1440, longestInner: 1440 };
+
+    // Leading rest: consecutive rest segments from start of day
+    let leading = 0;
+    for (const seg of segs) {
+      if (seg.act === 0) {
+        leading += seg.dur;
+      } else {
+        break;
+      }
+    }
+
+    // Trailing rest: consecutive rest segments at end of day
+    let trailing = 0;
+    for (let i = segs.length - 1; i >= 0; i--) {
+      if (segs[i].act === 0) {
+        trailing += segs[i].dur;
+      } else {
+        break;
+      }
+    }
+
+    // Longest inner rest (single segment)
+    let longestInner = 0;
+    for (const seg of segs) {
+      if (seg.act === 0 && seg.dur > longestInner) {
+        longestInner = seg.dur;
+      }
+    }
+
+    return { leading, trailing, longestInner };
+  }
+
+  // Compute rest info per day
+  const restInfoByDate = new Map();
+  for (const day of sorted) {
+    restInfoByDate.set(day.date.getTime(), dayRestInfo(day));
+  }
+
+  // For a set of days (sorted), find the longest continuous rest span,
+  // including spans that cross day boundaries.
+  function longestContinuousRest(weekDays) {
+    const wSorted = [...weekDays].sort((a, b) => a.date - b.date);
+    let longest = 0;
+
+    for (const day of wSorted) {
+      const info = restInfoByDate.get(day.date.getTime());
+      if (info) longest = Math.max(longest, info.longestInner);
+    }
+
+    // Check cross-day spans: trailing rest of day N + full-rest days + leading rest of next non-full-rest day
+    for (let i = 0; i < wSorted.length - 1; i++) {
+      const info = restInfoByDate.get(wSorted[i].date.getTime());
+      if (!info) continue;
+      let span = info.trailing;
+
+      // Walk forward across consecutive days
+      for (let j = i + 1; j < wSorted.length; j++) {
+        // Check days are truly consecutive calendar days
+        const prevDate = wSorted[j - 1].date;
+        const curDate = wSorted[j].date;
+        const diffMs = curDate.getTime() - prevDate.getTime();
+        const diffDays = Math.round(diffMs / 86400000);
+        if (diffDays !== 1) break; // not consecutive, gap in data
+
+        const jInfo = restInfoByDate.get(curDate.getTime());
+        if (!jInfo) break;
+
+        if (jInfo.leading === 1440) {
+          // Entire day is rest — add full day and keep going
+          span += 1440;
+        } else {
+          // Partial day — add leading rest and stop
+          span += jInfo.leading;
+          break;
+        }
+      }
+
+      longest = Math.max(longest, span);
+    }
+
+    return longest;
+  }
+
+  // --- Per-week check: longest rest must be >= 24h (reduced weekly rest minimum) ---
+  const weekKeys = [...weeks.keys()].sort();
+  const weekLongestRest = new Map();
+
+  for (const weekKey of weekKeys) {
+    const weekDays = weeks.get(weekKey);
+    const longest = longestContinuousRest(weekDays);
+    weekLongestRest.set(weekKey, longest);
+    const longestH = longest / 60;
+    const firstDate = [...weekDays].sort((a, b) => a.date - b.date)[0].date;
+
+    if (longestH < 24) {
+      violations.push({
+        date: firstDate,
+        rule: "Insufficient weekly rest",
+        description: `Longest continuous rest in week ${weekKey} was ${fmtMins(longest)}, required at least 24h (reduced weekly rest).`,
+        actual: fmtMins(longest),
+        limit: "24h 00m (reduced) / 45h 00m (regular)",
+        severity: "VSI",
+        article: "Art. 8(6) Reg 561/2006",
+      });
+    }
+  }
+
+  // --- Check: at least one regular (>= 45h) rest every 2 consecutive weeks ---
+  for (let i = 0; i < weekKeys.length - 1; i++) {
+    const rest1 = weekLongestRest.get(weekKeys[i]) || 0;
+    const rest2 = weekLongestRest.get(weekKeys[i + 1]) || 0;
+
+    if (rest1 < 45 * 60 && rest2 < 45 * 60) {
+      const firstDate = [...weeks.get(weekKeys[i])].sort((a, b) => a.date - b.date)[0].date;
+      // Both weeks only have reduced rests — violation
+      const bestRest = Math.max(rest1, rest2);
+      let severity;
+      if (bestRest >= 42 * 60) {
+        severity = "MI";
+      } else if (bestRest >= 36 * 60) {
+        severity = "SI";
+      } else {
+        severity = "VSI";
+      }
+
+      violations.push({
+        date: firstDate,
+        rule: "No regular weekly rest in 2 consecutive weeks",
+        description: `Neither week ${weekKeys[i]} nor ${weekKeys[i + 1]} had a regular weekly rest (>= 45h). Best was ${fmtMins(bestRest)}.`,
+        actual: fmtMins(bestRest),
+        limit: "45h 00m (at least once per 2 weeks)",
+        severity,
+        article: "Art. 8(6) Reg 561/2006",
+      });
+    }
+  }
+
+  // --- 6-day rule: track days since last rest >= 24h ---
+  let daysSinceLastWeeklyRest = 0;
+  let lastWeeklyRestDate = null;
+
+  for (const day of sorted) {
+    const info = restInfoByDate.get(day.date.getTime());
+    // Check if this day participates in a cross-day rest >= 24h
+    // Simplified: check if longestInner >= 24h or if trailing+next leading >= 24h
+    let hasQualifyingRest = false;
+    if (info && info.longestInner >= 24 * 60) {
+      hasQualifyingRest = true;
+    }
+    // Check cross-day: trailing of this day + leading of next day
+    if (!hasQualifyingRest && info) {
+      const nextDayTime = day.date.getTime() + 86400000;
+      const nextInfo = restInfoByDate.get(nextDayTime);
+      if (nextInfo && info.trailing + nextInfo.leading >= 24 * 60) {
+        hasQualifyingRest = true;
+      }
+      // Also check previous day trailing + this day leading
+      const prevDayTime = day.date.getTime() - 86400000;
+      const prevInfo = restInfoByDate.get(prevDayTime);
+      if (prevInfo && prevInfo.trailing + info.leading >= 24 * 60) {
+        hasQualifyingRest = true;
+      }
+    }
+
+    if (hasQualifyingRest) {
+      daysSinceLastWeeklyRest = 0;
+      lastWeeklyRestDate = day.date;
+    } else {
+      daysSinceLastWeeklyRest++;
+    }
+
+    if (daysSinceLastWeeklyRest > 6) {
+      const overageH = (daysSinceLastWeeklyRest - 6) * 24; // approximate hours over
+      let severity;
+      if (overageH < 3) {
+        severity = "MI";
+      } else if (overageH < 12) {
+        severity = "SI";
+      } else {
+        severity = "VSI";
+      }
+
+      violations.push({
+        date: day.date,
+        rule: "6-day rule (weekly rest overdue)",
+        description: `${daysSinceLastWeeklyRest} days since last qualifying weekly rest (>= 24h). Maximum is 6 days.`,
+        actual: `${daysSinceLastWeeklyRest} days`,
+        limit: "6 days",
+        severity,
+        article: "Art. 8(6) Reg 561/2006",
+      });
+    }
+  }
+}
+
+/**
+ * Rule 10 — WTD night work (Art. 7(1) Dir 2002/15/EC)
+ *
+ * If any work is performed during the night period (00:00–05:00 by default),
+ * total working time (driving + work) in that calendar day must not exceed 10h.
+ */
+function checkNightWork(days, violations) {
+  const NIGHT_START = 0; // minutes from midnight
+  const NIGHT_END = 5 * 60; // 05:00 = 300 minutes
+
+  for (const day of days) {
+    const segs = toSegments(day.activities || []);
+    if (!segs.length) continue;
+
+    // Check if any work (act 2 or 3) overlaps with the night period
+    let hasNightWork = false;
+    for (const seg of segs) {
+      if ((seg.act === 2 || seg.act === 3) && seg.start < NIGHT_END && seg.end > NIGHT_START) {
+        hasNightWork = true;
+        break;
+      }
+    }
+
+    if (!hasNightWork) continue;
+
+    // Total working time for the day (driving + work)
+    const totalWork = multiActMinutes(segs, [2, 3]);
+    const totalH = totalWork / 60;
+
+    if (totalH > 13) {
+      violations.push({
+        date: day.date,
+        rule: "Night work daily limit (WTD)",
+        description: `Night worker: total working time ${fmtMins(totalWork)} exceeds 13h (limit 10h for night workers).`,
+        actual: fmtMins(totalWork),
+        limit: "10h 00m",
+        severity: "VSI",
+        article: "Art. 7(1) Dir 2002/15/EC",
+      });
+    } else if (totalH > 11) {
+      violations.push({
+        date: day.date,
+        rule: "Night work daily limit (WTD)",
+        description: `Night worker: total working time ${fmtMins(totalWork)} exceeds 11h (limit 10h for night workers).`,
+        actual: fmtMins(totalWork),
+        limit: "10h 00m",
+        severity: "SI",
+        article: "Art. 7(1) Dir 2002/15/EC",
+      });
+    } else if (totalH > 10) {
+      violations.push({
+        date: day.date,
+        rule: "Night work daily limit (WTD)",
+        description: `Night worker: total working time ${fmtMins(totalWork)} exceeds 10h (limit 10h for night workers).`,
+        actual: fmtMins(totalWork),
+        limit: "10h 00m",
+        severity: "MI",
+        article: "Art. 7(1) Dir 2002/15/EC",
+      });
+    }
+  }
+}
+
+/**
+ * Rule 11 — WTD 48h average (Art. 4(a) Dir 2002/15/EC)
+ *
+ * Average weekly working time must not exceed 48h over a 17-week reference
+ * period (approximation of 4 months). Check rolling 17-week windows.
+ */
+function checkWTD48hAverage(days, violations) {
+  const weeks = groupByWeek(days);
+  const weekKeys = [...weeks.keys()].sort();
+
+  if (weekKeys.length === 0) return;
+
+  // Compute total working time (driving + work) per week
+  const weeklyWork = new Map();
+  for (const [weekKey, weekDays] of weeks) {
+    const totalWork = weekDays.reduce((sum, day) => {
+      const segs = toSegments(day.activities || []);
+      return sum + multiActMinutes(segs, [2, 3]);
+    }, 0);
+    weeklyWork.set(weekKey, totalWork);
+  }
+
+  const REFERENCE_WEEKS = 17;
+
+  // Rolling 17-week window
+  for (let i = 0; i <= weekKeys.length - REFERENCE_WEEKS; i++) {
+    let totalMins = 0;
+    for (let j = i; j < i + REFERENCE_WEEKS; j++) {
+      totalMins += weeklyWork.get(weekKeys[j]) || 0;
+    }
+
+    const avgPerWeek = totalMins / REFERENCE_WEEKS;
+    const avgH = avgPerWeek / 60;
+
+    if (avgH > 48) {
+      const periodStart = weekKeys[i];
+      const periodEnd = weekKeys[i + REFERENCE_WEEKS - 1];
+      const firstDate = [...weeks.get(weekKeys[i])].sort((a, b) => a.date - b.date)[0].date;
+
+      violations.push({
+        date: firstDate,
+        rule: "48h average weekly working time (WTD)",
+        description: `Average weekly working time over ${periodStart} to ${periodEnd} (17 weeks) is ${fmtMins(Math.round(avgPerWeek))} (limit 48h).`,
+        actual: fmtMins(Math.round(avgPerWeek)),
+        limit: "48h 00m average",
+        severity: "MI",
+        article: "Art. 4(a) Dir 2002/15/EC",
+      });
+    }
+  }
+
+  // If fewer than 17 weeks of data, check the available period as a single window
+  if (weekKeys.length > 0 && weekKeys.length < REFERENCE_WEEKS) {
+    let totalMins = 0;
+    for (const key of weekKeys) {
+      totalMins += weeklyWork.get(key) || 0;
+    }
+
+    const avgPerWeek = totalMins / weekKeys.length;
+    const avgH = avgPerWeek / 60;
+
+    if (avgH > 48) {
+      const firstDate = [...weeks.get(weekKeys[0])].sort((a, b) => a.date - b.date)[0].date;
+
+      violations.push({
+        date: firstDate,
+        rule: "48h average weekly working time (WTD)",
+        description: `Average weekly working time over ${weekKeys.length} available weeks (${weekKeys[0]} to ${weekKeys[weekKeys.length - 1]}) is ${fmtMins(Math.round(avgPerWeek))} (limit 48h).`,
+        actual: fmtMins(Math.round(avgPerWeek)),
+        limit: "48h 00m average",
+        severity: "MI",
+        article: "Art. 4(a) Dir 2002/15/EC",
+      });
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -538,8 +916,11 @@ function checkCompliance(days) {
   checkFortnightlyDriving(sorted, violations);
   checkContinuousDriving(sorted, violations);
   checkDailyRest(sorted, violations);
+  checkWeeklyRest(sorted, violations);
   checkWeeklyWorkingTime(sorted, violations);
   checkContinuousWork(sorted, violations);
+  checkNightWork(sorted, violations);
+  checkWTD48hAverage(sorted, violations);
 
   // Sort: by date ascending, then by severity (most severe first)
   const severityOrder = { MSI: 0, VSI: 1, SI: 2, MI: 3 };

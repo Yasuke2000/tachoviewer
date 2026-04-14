@@ -56,6 +56,107 @@ function walkTLV(buffer) {
   return efs;
 }
 
+function parseEvents(buffer, dec) {
+  if (!buffer || buffer.byteLength < 24) return [];
+  const view = new DataView(buffer);
+  const size = buffer.byteLength;
+  const labels = ["Tijdsoverlapping", "Kaartconflict", "Rijden zonder kaart", "Kaart ingestoken tijdens rijden", "Laatste sessie niet afgesloten", "Snelheidsoverschrijding"];
+  const events = [];
+  for (let offset = 0; offset + 24 <= size; offset += 24) {
+    const eventType = view.getUint8(offset);
+    if (eventType > 5) continue;
+    const beginTs = view.getUint32(offset + 1, false);
+    const endTs = view.getUint32(offset + 5, false);
+    if (beginTs === 0 || beginTs === 0xFFFFFFFF || endTs === 0 || endTs === 0xFFFFFFFF) continue;
+    if (beginTs <= 946684800 || beginTs >= 2000000000) continue;
+    if (endTs <= 946684800 || endTs >= 2000000000) continue;
+    const nation = view.getUint8(offset + 9);
+    const regNum = dec.decode(new Uint8Array(buffer, offset + 11, 13)).replace(/\0/g, "").trim();
+    events.push({
+      type: eventType, typeLabel: labels[eventType] || String(eventType),
+      beginTime: new Date(beginTs * 1000), endTime: new Date(endTs * 1000),
+      vehicleReg: (NATIONS[nation] || "") + (regNum ? "-" + regNum : ""),
+    });
+  }
+  return events;
+}
+
+function parseFaults(buffer, dec) {
+  if (!buffer || buffer.byteLength < 24) return [];
+  const view = new DataView(buffer);
+  const size = buffer.byteLength;
+  const labels = ["Kaartfout", "Tachograaffout"];
+  const faults = [];
+  for (let offset = 0; offset + 24 <= size; offset += 24) {
+    const faultType = view.getUint8(offset);
+    const beginTs = view.getUint32(offset + 1, false);
+    const endTs = view.getUint32(offset + 5, false);
+    if (beginTs === 0 || beginTs === 0xFFFFFFFF || endTs === 0 || endTs === 0xFFFFFFFF) continue;
+    if (beginTs <= 946684800 || beginTs >= 2000000000) continue;
+    if (endTs <= 946684800 || endTs >= 2000000000) continue;
+    const nation = view.getUint8(offset + 9);
+    const regNum = dec.decode(new Uint8Array(buffer, offset + 11, 13)).replace(/\0/g, "").trim();
+    faults.push({
+      type: faultType, typeLabel: labels[faultType] || String(faultType),
+      beginTime: new Date(beginTs * 1000), endTime: new Date(endTs * 1000),
+      vehicleReg: (NATIONS[nation] || "") + (regNum ? "-" + regNum : ""),
+    });
+  }
+  return faults;
+}
+
+function parsePlaces(buffer, dec) {
+  if (!buffer || buffer.byteLength < 10) return [];
+  const view = new DataView(buffer);
+  const size = buffer.byteLength;
+  const labels = ["Begin werkdag", "Einde werkdag", "Begin rust", "Einde rust"];
+  const places = [];
+  for (let offset = 0; offset + 10 <= size; offset += 10) {
+    const ts = view.getUint32(offset, false);
+    if (ts === 0 || ts === 0xFFFFFFFF) continue;
+    if (ts <= 946684800 || ts >= 2000000000) continue;
+    const entryType = view.getUint8(offset + 4);
+    const nationNum = view.getUint8(offset + 5);
+    const region = view.getUint8(offset + 6);
+    const odo = (view.getUint8(offset + 7) << 16) | (view.getUint8(offset + 8) << 8) | view.getUint8(offset + 9);
+    places.push({
+      time: new Date(ts * 1000),
+      type: entryType,
+      typeLabel: labels[entryType] || String(entryType),
+      country: NATIONS[nationNum] || String(nationNum),
+      odometer: odo,
+    });
+  }
+  return places;
+}
+
+function parseLicence(buffer, dec) {
+  if (!buffer || buffer.byteLength < 53) return { licenceNumber: null, licenceAuthority: null };
+  const authority = dec.decode(new Uint8Array(buffer, 1, 35)).replace(/\0/g, "").trim();
+  const number = dec.decode(new Uint8Array(buffer, 37, 16)).replace(/\0/g, "").trim();
+  return { licenceNumber: number || null, licenceAuthority: authority || null };
+}
+
+function parseConditions(buffer) {
+  if (!buffer || buffer.byteLength < 5) return [];
+  const view = new DataView(buffer);
+  const size = buffer.byteLength;
+  const labels = ["Buiten scope begin", "Buiten scope einde", "Veerboot/trein begin", "Veerboot/trein einde"];
+  const conditions = [];
+  for (let offset = 0; offset + 5 <= size; offset += 5) {
+    const ts = view.getUint32(offset, false);
+    if (ts === 0 || ts === 0xFFFFFFFF) continue;
+    if (ts <= 946684800 || ts >= 2000000000) continue;
+    const condType = view.getUint8(offset + 4);
+    conditions.push({
+      time: new Date(ts * 1000),
+      type: condType,
+      typeLabel: labels[condType] || String(condType),
+    });
+  }
+  return conditions;
+}
+
 function parseDDD(buffer) {
   const efs = walkTLV(buffer);
   const dec = new TextDecoder("latin1");
@@ -75,7 +176,12 @@ function parseDDD(buffer) {
   if (!actBuf) throw new Error("Geen activiteitsdata gevonden — geldig rijkaart .ddd bestand?");
   const vehBuf = efs[0x0504] ? efs[0x0505] : efs[0x0506];
   const vehicles = vehBuf ? parseVehicles(vehBuf, dec) : [];
-  return { days: parseActivity(actBuf), name, cardNumber, cardIssuer, cardExpiry, vehicles };
+  const events = parseEvents(efs[0x0502], dec);
+  const faults = parseFaults(efs[0x0503], dec);
+  const places = parsePlaces(efs[0x0506], dec);
+  const { licenceNumber, licenceAuthority } = parseLicence(efs[0x0521], dec);
+  const conditions = parseConditions(efs[0x0522]);
+  return { days: parseActivity(actBuf), name, cardNumber, cardIssuer, cardExpiry, vehicles, events, faults, places, licenceNumber, licenceAuthority, conditions };
 }
 
 function parseVehicles(buffer, dec) {
@@ -190,6 +296,7 @@ export default function App() {
   const restMin = days ? sumAct(days, 0) : 0;
   const activeDays = days ? days.filter(d => d.activities.some(a => a.act === 3)).length : 0;
   const uniqueVehicles = data?.vehicles ? [...new Map(data.vehicles.map(v => [v.reg, v])).values()] : [];
+  const eventCount = (data?.events?.length || 0) + (data?.faults?.length || 0);
 
   const sevCounts = useMemo(() => {
     const c = { MSI: 0, VSI: 0, SI: 0, MI: 0 };
@@ -206,29 +313,34 @@ export default function App() {
     dropzone: (isDrag) => ({ border: `2px dashed ${isDrag ? "#3b82f6" : "#1c2333"}`, borderRadius: 12, padding: "64px 32px", textAlign: "center", cursor: "pointer", background: isDrag ? "#0d1929" : "#0d1117", transition: "all 0.15s" }),
     card: { background: "#0d1117", border: "1px solid #1c2333", borderRadius: 8, padding: "12px 16px" },
     stats: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 20 },
-    infoGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10, marginBottom: 16 },
+    infoGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 10, marginBottom: 16 },
     ruler: { display: "flex", paddingLeft: 98, marginBottom: 3, gap: 0, paddingRight: 48 },
     bands: { display: "flex", flexDirection: "column", gap: 1 },
     row: { display: "flex", alignItems: "center", gap: 8 },
     lbl: { width: 90, flexShrink: 0, textAlign: "right", paddingRight: 8, fontSize: 10 },
     band: { flex: 1, height: 18, background: "#161b22", borderRadius: 2, overflow: "hidden", position: "relative" },
     dur: { width: 42, textAlign: "right", fontSize: 9, color: "#6b7280", flexShrink: 0 },
-    btn: { background: "#1d6aff", color: "white", border: "none", borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 },
     btnSm: { background: "#1c2333", color: "#c9d1d9", border: "1px solid #2d3748", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11 },
     btnGhost: { background: "transparent", color: "#6b7280", border: "1px solid #2d3748", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12 },
     err: { background: "#1a0505", border: "1px solid #7f1d1d", borderRadius: 8, padding: "12px 16px", color: "#fca5a5", marginTop: 12 },
-    tabBar: { display: "flex", gap: 4, marginBottom: 16, borderBottom: "1px solid #1c2333", paddingBottom: 8 },
-    tab: (active) => ({ padding: "6px 16px", borderRadius: "6px 6px 0 0", cursor: "pointer", fontSize: 12, fontWeight: active ? 600 : 400, color: active ? "#e6edf3" : "#6b7280", background: active ? "#1c2333" : "transparent", border: "none" }),
+    tabBar: { display: "flex", gap: 2, marginBottom: 16, borderBottom: "1px solid #1c2333", paddingBottom: 0, overflowX: "auto" },
+    tab: (active) => ({ padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: active ? 600 : 400, color: active ? "#e6edf3" : "#6b7280", background: active ? "#1c2333" : "transparent", border: "none", borderBottom: active ? "2px solid #3b82f6" : "2px solid transparent", whiteSpace: "nowrap" }),
     vRow: { background: "#0d1117", border: "1px solid #1c2333", borderRadius: 8, padding: "10px 14px", marginBottom: 6 },
     sevBadge: (sev) => ({ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700, color: "#fff", background: SEV[sev]?.color || "#6b7280" }),
+    tbl: { width: "100%", borderCollapse: "collapse", fontSize: 12 },
+    th: { textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #1c2333", color: "#6b7280", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em" },
+    td: { padding: "6px 10px", borderBottom: "1px solid #0d1117", color: "#c9d1d9" },
+    subHead: { fontSize: 13, fontWeight: 600, color: "#9ca3af", marginBottom: 10, marginTop: 16 },
   };
+
+  const TabBadge = ({ count, color }) => count > 0 ? <span style={{ background: color || "#3b82f6", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, marginLeft: 4 }}>{count}</span> : null;
 
   return (
     <div style={S.root}>
       <div style={S.hdr}>
         <div><span style={S.logo}>TACHOVIEWER</span><span style={S.badge}>offline · browser-only</span></div>
         {data && (
-          <div className="no-print" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <div className="no-print" style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
             <button style={S.btnSm} onClick={() => exportPDF(data, violations)}>PDF</button>
             <button style={S.btnSm} onClick={() => exportExcel(data, violations)}>Excel</button>
             <button style={S.btnSm} onClick={() => exportCSV(data, violations)}>CSV</button>
@@ -256,6 +368,7 @@ export default function App() {
             <div style={{ fontSize: 22, fontWeight: 700, color: "#e6edf3" }}>{data.name}</div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>
               {days.length} dagrecords · {days[0]?.date.toLocaleDateString("nl-BE")} → {days[days.length - 1]?.date.toLocaleDateString("nl-BE")}
+              {data.licenceNumber && <span> · Rijbewijs {data.licenceNumber}</span>}
             </div>
           </div>
 
@@ -274,11 +387,10 @@ export default function App() {
                 <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>{v.odoBegin.toLocaleString("nl-BE")} → {v.odoEnd < 16777215 ? v.odoEnd.toLocaleString("nl-BE") : "—"} km</div>
               </div>
             ))}
-            {/* Compliance badge */}
             <div style={{ ...S.card, borderColor: violations.length ? "#7f1d1d" : "#14532d" }}>
               <div style={{ fontSize: 9, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Naleving</div>
               {violations.length === 0
-                ? <div style={{ fontSize: 14, fontWeight: 700, color: "#22c55e" }}>Geen overtredingen</div>
+                ? <div style={{ fontSize: 14, fontWeight: 700, color: "#22c55e" }}>Conform</div>
                 : <div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: "#ef4444", marginBottom: 4 }}>{violations.length} overtreding{violations.length !== 1 ? "en" : ""}</div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -311,12 +423,12 @@ export default function App() {
           {/* Tabs */}
           <div className="no-print" style={S.tabBar}>
             <button style={S.tab(tab === "activities")} onClick={() => setTab("activities")}>Activiteiten</button>
-            <button style={S.tab(tab === "violations")} onClick={() => setTab("violations")}>
-              Overtredingen {violations.length > 0 && <span style={{ background: "#ef4444", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, marginLeft: 4 }}>{violations.length}</span>}
-            </button>
+            <button style={S.tab(tab === "violations")} onClick={() => setTab("violations")}>Overtredingen<TabBadge count={violations.length} color="#ef4444" /></button>
+            <button style={S.tab(tab === "vehicles")} onClick={() => setTab("vehicles")}>Voertuigen<TabBadge count={data.vehicles?.length || 0} color="#3b82f6" /></button>
+            <button style={S.tab(tab === "events")} onClick={() => setTab("events")}>Gebeurtenissen<TabBadge count={eventCount} color="#f97316" /></button>
           </div>
 
-          {/* Activities tab */}
+          {/* ── Activities tab ──────────────────────────────────────────── */}
           {tab === "activities" && <>
             <div style={{ display: "flex", gap: 16, marginBottom: 10, flexWrap: "wrap" }}>
               {Object.entries(ACT).map(([k, v]) => (
@@ -356,20 +468,18 @@ export default function App() {
             </div>
           </>}
 
-          {/* Violations tab */}
+          {/* ── Violations tab ─────────────────────────────────────────── */}
           {tab === "violations" && <>
             {violations.length === 0 ? (
-              <div style={{ textAlign: "center", padding: 48, color: "#22c55e", fontSize: 16 }}>
-                Geen overtredingen gevonden — volledig conform
-              </div>
+              <div style={{ textAlign: "center", padding: 48, color: "#22c55e", fontSize: 16 }}>Geen overtredingen gevonden — volledig conform</div>
             ) : (
               <div>
                 <div style={{ marginBottom: 12, fontSize: 12, color: "#6b7280" }}>
-                  {violations.length} overtreding{violations.length !== 1 ? "en" : ""} gevonden op basis van Reg 561/2006 en Dir 2002/15/EC
+                  {violations.length} overtreding{violations.length !== 1 ? "en" : ""} · Reg 561/2006 + Dir 2002/15/EC
                 </div>
                 {violations.map((v, i) => (
                   <div key={i} style={S.vRow}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 4 }}>
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <span style={S.sevBadge(v.severity)}>{v.severity}</span>
                         <span style={{ fontWeight: 600, color: "#e6edf3" }}>{v.rule}</span>
@@ -377,7 +487,7 @@ export default function App() {
                       <span style={{ fontSize: 11, color: "#6b7280" }}>{v.date.toLocaleDateString("nl-BE")}</span>
                     </div>
                     <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 4 }}>{v.description}</div>
-                    <div style={{ display: "flex", gap: 16, fontSize: 10, color: "#4b5563" }}>
+                    <div style={{ display: "flex", gap: 16, fontSize: 10, color: "#4b5563", flexWrap: "wrap" }}>
                       <span>Werkelijk: <b style={{ color: "#ef4444" }}>{v.actual}</b></span>
                       <span>Limiet: <b style={{ color: "#22c55e" }}>{v.limit}</b></span>
                       <span style={{ color: "#3b82f6" }}>{v.article}</span>
@@ -388,8 +498,121 @@ export default function App() {
             )}
           </>}
 
+          {/* ── Vehicles tab ───────────────────────────────────────────── */}
+          {tab === "vehicles" && <>
+            {data.vehicles?.length > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={S.tbl}>
+                  <thead><tr>
+                    <th style={S.th}>Registratie</th><th style={S.th}>Land</th><th style={S.th}>Km begin</th><th style={S.th}>Km einde</th><th style={S.th}>Eerste gebruik</th><th style={S.th}>Laatste gebruik</th>
+                  </tr></thead>
+                  <tbody>
+                    {data.vehicles.map((v, i) => (
+                      <tr key={i}>
+                        <td style={{ ...S.td, fontFamily: "monospace", fontWeight: 600 }}>{v.reg}</td>
+                        <td style={S.td}>{v.nation}</td>
+                        <td style={S.td}>{v.odoBegin.toLocaleString("nl-BE")}</td>
+                        <td style={S.td}>{v.odoEnd < 16777215 ? v.odoEnd.toLocaleString("nl-BE") : "—"}</td>
+                        <td style={S.td}>{v.firstUse?.toLocaleDateString("nl-BE")}</td>
+                        <td style={S.td}>{v.lastUse?.toLocaleDateString("nl-BE") || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : <div style={{ textAlign: "center", padding: 32, color: "#4b5563" }}>Geen voertuiggegevens gevonden</div>}
+
+            {/* Places */}
+            {data.places?.length > 0 && <>
+              <div style={S.subHead}>Plaatsen ({data.places.length})</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={S.tbl}>
+                  <thead><tr>
+                    <th style={S.th}>Datum/tijd</th><th style={S.th}>Type</th><th style={S.th}>Land</th><th style={S.th}>Km</th>
+                  </tr></thead>
+                  <tbody>
+                    {data.places.map((p, i) => (
+                      <tr key={i}>
+                        <td style={S.td}>{p.time.toLocaleString("nl-BE")}</td>
+                        <td style={S.td}>{p.typeLabel}</td>
+                        <td style={S.td}>{p.country}</td>
+                        <td style={S.td}>{p.odometer.toLocaleString("nl-BE")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>}
+          </>}
+
+          {/* ── Events tab ─────────────────────────────────────────────── */}
+          {tab === "events" && <>
+            {data.events?.length > 0 && <>
+              <div style={S.subHead}>Gebeurtenissen ({data.events.length})</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={S.tbl}>
+                  <thead><tr>
+                    <th style={S.th}>Type</th><th style={S.th}>Begin</th><th style={S.th}>Einde</th><th style={S.th}>Voertuig</th>
+                  </tr></thead>
+                  <tbody>
+                    {data.events.map((ev, i) => (
+                      <tr key={i}>
+                        <td style={{ ...S.td, color: "#f97316" }}>{ev.typeLabel}</td>
+                        <td style={S.td}>{ev.beginTime.toLocaleString("nl-BE")}</td>
+                        <td style={S.td}>{ev.endTime.toLocaleString("nl-BE")}</td>
+                        <td style={{ ...S.td, fontFamily: "monospace" }}>{ev.vehicleReg}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>}
+
+            {data.faults?.length > 0 && <>
+              <div style={S.subHead}>Fouten ({data.faults.length})</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={S.tbl}>
+                  <thead><tr>
+                    <th style={S.th}>Type</th><th style={S.th}>Begin</th><th style={S.th}>Einde</th><th style={S.th}>Voertuig</th>
+                  </tr></thead>
+                  <tbody>
+                    {data.faults.map((f, i) => (
+                      <tr key={i}>
+                        <td style={{ ...S.td, color: "#ef4444" }}>{f.typeLabel}</td>
+                        <td style={S.td}>{f.beginTime.toLocaleString("nl-BE")}</td>
+                        <td style={S.td}>{f.endTime.toLocaleString("nl-BE")}</td>
+                        <td style={{ ...S.td, fontFamily: "monospace" }}>{f.vehicleReg}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>}
+
+            {data.conditions?.length > 0 && <>
+              <div style={S.subHead}>Bijzondere voorwaarden ({data.conditions.length})</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={S.tbl}>
+                  <thead><tr><th style={S.th}>Datum/tijd</th><th style={S.th}>Type</th></tr></thead>
+                  <tbody>
+                    {data.conditions.map((c, i) => (
+                      <tr key={i}>
+                        <td style={S.td}>{c.time.toLocaleString("nl-BE")}</td>
+                        <td style={S.td}>{c.typeLabel}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>}
+
+            {eventCount === 0 && !data.conditions?.length && (
+              <div style={{ textAlign: "center", padding: 32, color: "#22c55e" }}>Geen gebeurtenissen of fouten geregistreerd</div>
+            )}
+          </>}
+
           {/* Footer */}
-          <div style={{ marginTop: 24, paddingTop: 12, borderTop: "1px solid #1c2333", fontSize: 9, color: "#4b5563", display: "flex", justifyContent: "space-between" }}>
+          <div style={{ marginTop: 24, paddingTop: 12, borderTop: "1px solid #1c2333", fontSize: 9, color: "#4b5563", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 4 }}>
             <span>Rapport: {new Date().toLocaleString("nl-BE")}</span>
             <span>TachoViewer · lokale verwerking · Reg 561/2006 + Dir 2002/15/EC</span>
           </div>

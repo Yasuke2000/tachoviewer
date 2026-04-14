@@ -200,6 +200,91 @@ async function exportPDF(data, violations) {
   });
   y = doc.lastAutoTable.finalY + 8;
 
+  /* ── activity timeline bars ────────────────────────────────────────── */
+  if (y > pageH - 50) { doc.addPage(); y = 16; }
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.text("Activiteitentijdlijn", marginL, y);
+  y += 5;
+
+  // Color map for activities (RGB arrays)
+  const ACT_COLORS = {
+    0: [96, 165, 250],   // rest - blue
+    1: [250, 204, 21],   // availability - yellow
+    2: [251, 146, 60],   // work - orange
+    3: [239, 68, 68],    // driving - red
+  };
+
+  // Legend
+  doc.setFontSize(7);
+  doc.setFont("helvetica", "normal");
+  const legendLabels = ["Rust", "Beschikbaar", "Werk", "Rijden"];
+  let lx = marginL;
+  for (let a = 0; a < 4; a++) {
+    doc.setFillColor(...ACT_COLORS[a]);
+    doc.rect(lx, y - 2.5, 4, 3, "F");
+    doc.text(legendLabels[a], lx + 5, y);
+    lx += 25;
+  }
+  y += 5;
+
+  // Hour ruler
+  doc.setFontSize(6);
+  doc.setTextColor(130);
+  const timelineX = marginL + 22;
+  const timelineW = pageW - marginL - marginR - 22;
+  for (let h = 0; h <= 24; h += 3) {
+    const hx = timelineX + (h / 24) * timelineW;
+    doc.text(String(h).padStart(2, "0") + "h", hx, y, { align: "center" });
+  }
+  y += 3;
+  doc.setTextColor(33, 37, 41);
+
+  // Draw bars for each day
+  const barH = 2.5;
+  const maxBarsPerPage = Math.floor((pageH - y - 20) / (barH + 1));
+  let barsDrawn = 0;
+
+  for (const day of data.days) {
+    if (barsDrawn >= maxBarsPerPage || y > pageH - 15) {
+      doc.addPage();
+      y = 16;
+      barsDrawn = 0;
+      // Re-draw ruler on new page
+      doc.setFontSize(6);
+      doc.setTextColor(130);
+      for (let h = 0; h <= 24; h += 3) {
+        const hx = timelineX + (h / 24) * timelineW;
+        doc.text(String(h).padStart(2, "0") + "h", hx, y, { align: "center" });
+      }
+      y += 3;
+      doc.setTextColor(33, 37, 41);
+    }
+
+    // Date label
+    doc.setFontSize(6);
+    doc.setFont("helvetica", "normal");
+    doc.text(fmtDate(day.date), marginL, y + barH / 2 + 0.5);
+
+    // Background bar
+    doc.setFillColor(230, 230, 230);
+    doc.rect(timelineX, y, timelineW, barH, "F");
+
+    // Activity segments
+    const segs = toSegments(day.activities);
+    for (const seg of segs) {
+      const x = timelineX + (seg.start / 1440) * timelineW;
+      const w = Math.max((seg.dur / 1440) * timelineW, 0.2);
+      const c = ACT_COLORS[seg.act] || [200, 200, 200];
+      doc.setFillColor(...c);
+      doc.rect(x, y, w, barH, "F");
+    }
+
+    y += barH + 1;
+    barsDrawn++;
+  }
+  y += 4;
+
   /* ── violations table ──────────────────────────────────────────────── */
   if (violations.length) {
     // Start a new page if less than 40mm remains
