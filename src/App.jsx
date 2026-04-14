@@ -11,22 +11,68 @@ function parseDDD(buffer) {
   const view = new DataView(buffer);
   const size = buffer.byteLength;
   let actBuf = null, name = null;
+
+  // Try 5-byte header first: Tag(2) + Type(1) + Length(2)
+  // EU digital tachograph card download format
   let offset = 0;
-  while (offset + 4 <= size) {
+  while (offset + 5 <= size) {
     const tag = view.getUint16(offset, false);
-    const len = view.getUint16(offset + 2, false);
-    offset += 4;
-    if (len === 0) continue;
-    if (offset + len > size) break;
-    if (tag === 0x0502 && len >= 35) {
+    const typ = view.getUint8(offset + 2);
+    const len = view.getUint16(offset + 3, false);
+    if (len === 0 || offset + 5 + len > size) break;
+    const dataOff = offset + 5;
+
+    // EF_Identification (0x0520): extract driver name
+    // Only use data records (type 0 or 2), not signatures (type 1 or 3)
+    if (tag === 0x0520 && (typ === 0 || typ === 2) && len >= 103 && !name) {
       const dec = new TextDecoder("latin1");
-      const sur = dec.decode(new Uint8Array(buffer, offset, 35)).replace(/\0/g, "").trim();
-      const fst = len >= 70 ? dec.decode(new Uint8Array(buffer, offset + 35, 35)).replace(/\0/g, "").trim() : "";
+      // surname at byte 66 (after codepage byte at 65), 35 chars
+      const sur = dec.decode(new Uint8Array(buffer, dataOff + 66, 35)).replace(/\0/g, "").trim();
+      // firstName at byte 102 (after codepage byte at 101), 35 chars
+      const fst = dec.decode(new Uint8Array(buffer, dataOff + 102, 35)).replace(/\0/g, "").trim();
       name = [fst, sur].filter(Boolean).join(" ");
     }
-    if (tag === 0x0505) actBuf = buffer.slice(offset, offset + len);
-    offset += len;
+
+    // EF_Driver_Activity_Data (0x0504 or 0x0505 depending on card/tool)
+    if ((tag === 0x0504 || tag === 0x0505) && (typ === 0 || typ === 2)) {
+      if (!actBuf || len > actBuf.byteLength) {
+        actBuf = buffer.slice(dataOff, dataOff + len);
+      }
+    }
+
+    offset = dataOff + len;
   }
+
+  // Fallback: try 4-byte header: Tag(2) + Length(2) (older download tools)
+  if (!actBuf) {
+    offset = 0;
+    while (offset + 4 <= size) {
+      const tag = view.getUint16(offset, false);
+      const len = view.getUint16(offset + 2, false);
+      offset += 4;
+      if (len === 0) continue;
+      if (offset + len > size) break;
+      if (tag === 0x0520 && len >= 103 && !name) {
+        const dec = new TextDecoder("latin1");
+        const sur = dec.decode(new Uint8Array(buffer, offset + 66, 35)).replace(/\0/g, "").trim();
+        const fst = dec.decode(new Uint8Array(buffer, offset + 102, 35)).replace(/\0/g, "").trim();
+        name = [fst, sur].filter(Boolean).join(" ");
+      }
+      if (tag === 0x0502 && len >= 35 && !name) {
+        const dec = new TextDecoder("latin1");
+        const sur = dec.decode(new Uint8Array(buffer, offset, 35)).replace(/\0/g, "").trim();
+        const fst = len >= 70 ? dec.decode(new Uint8Array(buffer, offset + 35, 35)).replace(/\0/g, "").trim() : "";
+        name = [fst, sur].filter(Boolean).join(" ");
+      }
+      if (tag === 0x0504 || tag === 0x0505) {
+        if (!actBuf || len > actBuf.byteLength) {
+          actBuf = buffer.slice(offset, offset + len);
+        }
+      }
+      offset += len;
+    }
+  }
+
   if (!actBuf) throw new Error("Geen activiteitsdata gevonden — geldig rijkaart .ddd bestand?");
   return { days: parseActivity(actBuf), name };
 }
@@ -51,7 +97,7 @@ function parseActivity(buffer) {
         for (let i = offset + 12; i + 1 < offset + recLen && i + 1 <= to; i += 2) {
           const w = view.getUint16(i, false);
           if ((w >> 15) & 1) continue;
-          activities.push({ act: (w >> 13) & 3, time: w & 0x7ff });
+          activities.push({ act: (w >> 11) & 3, time: w & 0x7ff });
         }
         if (activities.length > 0 || dist > 0) out.push({ date, dist, activities });
       }
