@@ -706,12 +706,24 @@ function checkWeeklyRest(days, violations) {
   }
 
   // --- Per-week check: longest rest must be >= 24h (reduced weekly rest minimum) ---
+  // Include boundary days from adjacent weeks to detect weekend rest spans
   const weekKeys = [...weeks.keys()].sort();
   const weekLongestRest = new Map();
 
-  for (const weekKey of weekKeys) {
+  for (let wi = 0; wi < weekKeys.length; wi++) {
+    const weekKey = weekKeys[wi];
     const weekDays = weeks.get(weekKey);
-    const longest = longestContinuousRest(weekDays);
+    // Include last day of previous week and first day of next week for cross-week rest spans
+    const extendedDays = [...weekDays];
+    if (wi > 0) {
+      const prevWeekDays = weeks.get(weekKeys[wi - 1]);
+      if (prevWeekDays?.length) extendedDays.unshift(prevWeekDays[prevWeekDays.length - 1]);
+    }
+    if (wi < weekKeys.length - 1) {
+      const nextWeekDays = weeks.get(weekKeys[wi + 1]);
+      if (nextWeekDays?.length) extendedDays.push(nextWeekDays[0]);
+    }
+    const longest = longestContinuousRest(extendedDays);
     weekLongestRest.set(weekKey, longest);
     const longestH = longest / 60;
     const firstDate = [...weekDays].sort((a, b) => a.date - b.date)[0].date;
@@ -760,49 +772,76 @@ function checkWeeklyRest(days, violations) {
   }
 
   // --- 6-day rule: track days since last rest >= 24h ---
+  // Account for gaps between recorded days (card removed = rest)
   let daysSinceLastWeeklyRest = 0;
-  let lastWeeklyRestDate = null;
 
-  for (const day of sorted) {
+  for (let idx = 0; idx < sorted.length; idx++) {
+    const day = sorted[idx];
     const info = restInfoByDate.get(day.date.getTime());
-    // Check if this day participates in a cross-day rest >= 24h
-    // Simplified: check if longestInner >= 24h or if trailing+next leading >= 24h
+
     let hasQualifyingRest = false;
-    if (info && info.longestInner >= 24 * 60) {
+
+    // 1. Check if there's a calendar gap BEFORE this day (missing days = card out = rest)
+    if (idx > 0) {
+      const prevDay = sorted[idx - 1];
+      const calendarGap = Math.round((day.date.getTime() - prevDay.date.getTime()) / 86400000);
+      if (calendarGap > 1) {
+        // Gap of N missing days. Total rest = prev trailing + (N-1)*1440 + this leading
+        const prevInfo = restInfoByDate.get(prevDay.date.getTime());
+        const prevTrailing = prevInfo ? prevInfo.trailing : 0;
+        const thisLeading = info ? info.leading : 0;
+        const gapRest = prevTrailing + (calendarGap - 1) * 1440 + thisLeading;
+        if (gapRest >= 24 * 60) hasQualifyingRest = true;
+      }
+    }
+
+    // 2. Check within-day rest >= 24h
+    if (!hasQualifyingRest && info && info.longestInner >= 24 * 60) {
       hasQualifyingRest = true;
     }
-    // Check cross-day: trailing of this day + leading of next day
+
+    // 3. Check cross-day with adjacent recorded days (trailing + leading)
     if (!hasQualifyingRest && info) {
-      const nextDayTime = day.date.getTime() + 86400000;
-      const nextInfo = restInfoByDate.get(nextDayTime);
-      if (nextInfo && info.trailing + nextInfo.leading >= 24 * 60) {
-        hasQualifyingRest = true;
+      // With next recorded day
+      if (idx < sorted.length - 1) {
+        const nextDay = sorted[idx + 1];
+        const nextInfo = restInfoByDate.get(nextDay.date.getTime());
+        const gap = Math.round((nextDay.date.getTime() - day.date.getTime()) / 86400000);
+        const gapMins = Math.max(0, (gap - 1)) * 1440;
+        if (nextInfo && info.trailing + gapMins + nextInfo.leading >= 24 * 60) {
+          hasQualifyingRest = true;
+        }
       }
-      // Also check previous day trailing + this day leading
-      const prevDayTime = day.date.getTime() - 86400000;
-      const prevInfo = restInfoByDate.get(prevDayTime);
-      if (prevInfo && prevInfo.trailing + info.leading >= 24 * 60) {
-        hasQualifyingRest = true;
+      // With previous recorded day
+      if (!hasQualifyingRest && idx > 0) {
+        const prevDay = sorted[idx - 1];
+        const prevInfo = restInfoByDate.get(prevDay.date.getTime());
+        const gap = Math.round((day.date.getTime() - prevDay.date.getTime()) / 86400000);
+        const gapMins = Math.max(0, (gap - 1)) * 1440;
+        if (prevInfo && prevInfo.trailing + gapMins + info.leading >= 24 * 60) {
+          hasQualifyingRest = true;
+        }
       }
     }
 
     if (hasQualifyingRest) {
       daysSinceLastWeeklyRest = 0;
-      lastWeeklyRestDate = day.date;
     } else {
-      daysSinceLastWeeklyRest++;
+      // Count actual calendar days (including gaps) since last recorded day
+      if (idx > 0) {
+        const calendarGap = Math.round((day.date.getTime() - sorted[idx - 1].date.getTime()) / 86400000);
+        daysSinceLastWeeklyRest += calendarGap;
+      } else {
+        daysSinceLastWeeklyRest++;
+      }
     }
 
     if (daysSinceLastWeeklyRest > 6) {
-      const overageH = (daysSinceLastWeeklyRest - 6) * 24; // approximate hours over
+      const overageH = (daysSinceLastWeeklyRest - 6) * 24;
       let severity;
-      if (overageH < 3) {
-        severity = "MI";
-      } else if (overageH < 12) {
-        severity = "SI";
-      } else {
-        severity = "VSI";
-      }
+      if (overageH < 3) severity = "MI";
+      else if (overageH < 12) severity = "SI";
+      else severity = "VSI";
 
       violations.push({
         date: day.date,
