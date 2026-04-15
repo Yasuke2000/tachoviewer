@@ -58,6 +58,17 @@ body { font-family: 'Inter', system-ui, -apple-system, sans-serif; -webkit-font-
 .tab-active { color: #e2e8f0 !important; background: rgba(59,130,246,0.15) !important; font-weight: 600; }
 .tab-badge { background: #3b82f6; color: white; border-radius: 10px; padding: 1px 7px; font-size: 10px; font-weight: 600; min-width: 18px; text-align: center; }
 
+/* ── Driver selector (multi-file) ─────────────────────────────────────── */
+.driver-selector { display: flex; gap: 6px; margin-bottom: 16px; overflow-x: auto; padding: 4px 0; }
+.driver-pill { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 10px; border: 1px solid rgba(51,65,85,0.3); background: rgba(15,23,42,0.4); cursor: pointer; font-family: inherit; font-size: 12px; color: #94a3b8; white-space: nowrap; transition: all 0.15s; }
+.driver-pill:hover { border-color: rgba(59,130,246,0.4); color: #e2e8f0; }
+.driver-pill-active { background: rgba(59,130,246,0.15); border-color: rgba(59,130,246,0.5); color: #e2e8f0; }
+.driver-pill-name { font-weight: 600; }
+.driver-pill-card { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #64748b; background: rgba(30,41,59,0.5); padding: 1px 6px; border-radius: 4px; }
+.driver-pill-badge { background: #ef4444; color: white; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; min-width: 18px; text-align: center; }
+.driver-pill-remove { background: none; border: none; color: #475569; cursor: pointer; font-size: 12px; padding: 0 2px; font-family: inherit; line-height: 1; transition: color 0.15s; }
+.driver-pill-remove:hover { color: #ef4444; }
+
 /* ── Legend ───────────────────────────────────────────────────────────── */
 .legend { display: flex; gap: 18px; margin-bottom: 12px; flex-wrap: wrap; }
 .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #94a3b8; }

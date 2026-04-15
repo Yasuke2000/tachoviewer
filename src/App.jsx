@@ -327,31 +327,62 @@ function fmtDate(d) { return d.toLocaleDateString("nl-BE", { weekday: "short", d
 
 /* ── main component ──────────────────────────────────────────────────── */
 export default function App() {
-  const [data, setData] = useState(null);
+  const [drivers, setDrivers] = useState([]); // array of parsed driver data
+  const [activeIdx, setActiveIdx] = useState(0);
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
   const [drag, setDrag] = useState(false);
   const [tab, setTab] = useState("activities");
-  const [showLegal, setShowLegal] = useState(null); // "privacy" | "terms" | null
+  const [showLegal, setShowLegal] = useState(null);
   const inputRef = useRef();
 
+  const data = drivers[activeIdx] || null;
   const violations = useMemo(() => data?.days ? checkCompliance(data.days) : [], [data]);
 
-  const load = useCallback((file) => {
-    if (!file) return;
+  const loadFiles = useCallback((files) => {
+    if (!files || !files.length) return;
     setBusy(true); setErr(null);
-    const r = new FileReader();
-    r.onload = (e) => {
-      try {
-        const res = parseDDD(e.target.result);
-        if (!res.name) res.name = file.name.replace(/\.[^.]+$/, "");
-        setData(res); setTab("activities");
-      } catch (ex) { setErr(ex.message); }
-      setBusy(false);
-    };
-    r.onerror = () => { setErr("Kon bestand niet lezen."); setBusy(false); };
-    r.readAsArrayBuffer(file);
+    let pending = files.length;
+    const results = [];
+    Array.from(files).forEach((file) => {
+      const r = new FileReader();
+      r.onload = (e) => {
+        try {
+          const res = parseDDD(e.target.result);
+          if (!res.name) res.name = file.name.replace(/\.[^.]+$/, "");
+          res._file = file.name;
+          results.push(res);
+        } catch (ex) {
+          setErr(prev => prev ? prev + "; " + ex.message : ex.message);
+        }
+        pending--;
+        if (pending === 0) {
+          if (results.length > 0) {
+            setDrivers(prev => {
+              const existing = new Set(prev.map(d => d.cardNumber || d.name));
+              const newOnes = results.filter(r => !existing.has(r.cardNumber || r.name));
+              const merged = [...prev, ...newOnes];
+              // If this is the first load, select the first driver
+              if (prev.length === 0) setActiveIdx(0);
+              return merged;
+            });
+            setTab("activities");
+          }
+          setBusy(false);
+        }
+      };
+      r.onerror = () => { pending--; if (pending === 0) setBusy(false); };
+      r.readAsArrayBuffer(file);
+    });
   }, []);
+
+  const removeDriver = useCallback((idx) => {
+    setDrivers(prev => {
+      const next = prev.filter((_, i) => i !== idx);
+      if (activeIdx >= next.length) setActiveIdx(Math.max(0, next.length - 1));
+      return next;
+    });
+  }, [activeIdx]);
 
   const days = data?.days;
   const totalKm = days ? days.reduce((s, d) => s + d.dist, 0) : 0;
@@ -388,29 +419,30 @@ export default function App() {
             <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.05em" }}>100% browser · geen upload</div>
           </div>
         </div>
-        {data && (
+        {drivers.length > 0 && (
           <div className="no-print header-actions">
             <button className="btn-export" onClick={() => exportPDF(data, violations)}>PDF</button>
             <button className="btn-export" onClick={() => exportExcel(data, violations)}>Excel</button>
             <button className="btn-export" onClick={() => exportCSV(data, violations)}>CSV</button>
-            <button className="btn-ghost" onClick={() => setData(null)}>← Nieuw bestand</button>
+            <button className="btn-export" onClick={() => inputRef.current?.click()}>+ Bestand</button>
+            <button className="btn-ghost" onClick={() => { setDrivers([]); setActiveIdx(0); }}>← Reset</button>
           </div>
         )}
       </header>
 
       <div className="app-wrap">
         {/* ── Upload zone ──────────────────────────────────────────── */}
-        {!data && !busy && (
+        {drivers.length === 0 && !busy && (
           <div className={`dropzone ${drag ? "dropzone-active" : ""}`}
             onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
-            onDrop={e => { e.preventDefault(); setDrag(false); load(e.dataTransfer.files[0]); }}
+            onDrop={e => { e.preventDefault(); setDrag(false); loadFiles(e.dataTransfer.files); }}
             onClick={() => inputRef.current?.click()}>
-            <input ref={inputRef} type="file" accept=".ddd,.esm,.tgd,.add" style={{ display: "none" }} onChange={e => load(e.target.files[0])} />
+            <input ref={inputRef} type="file" accept=".ddd,.esm,.tgd,.add" multiple style={{ display: "none" }} onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />
             <div className="dropzone-icon">
               <svg width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
             </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", marginBottom: 8 }}>Sleep je .ddd bestand hier</div>
-            <div style={{ color: "#64748b", marginBottom: 20 }}>of klik om te selecteren</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", marginBottom: 8 }}>Sleep je .ddd bestanden hier</div>
+            <div style={{ color: "#64748b", marginBottom: 20 }}>of klik om te selecteren · meerdere bestanden mogelijk</div>
             <div className="dropzone-formats">.ddd .esm .tgd .add</div>
             <div style={{ fontSize: 11, color: "#475569", marginTop: 16 }}>🔒 Verwerking volledig in je browser — geen data wordt verstuurd</div>
             <div style={{ fontSize: 10, color: "#334155", marginTop: 12, maxWidth: 480, margin: "12px auto 0", lineHeight: 1.5 }}>
@@ -420,10 +452,29 @@ export default function App() {
             </div>
           </div>
         )}
+        {/* Hidden input for adding more files when drivers already loaded */}
+        {drivers.length > 0 && <input ref={inputRef} type="file" accept=".ddd,.esm,.tgd,.add" multiple style={{ display: "none" }} onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />}
         {err && <div className="error-banner">⚠ {err}</div>}
         {busy && <div style={{ textAlign: "center", padding: 64, color: "#64748b" }}><div className="spinner" />Bestand verwerken...</div>}
 
         {data && days && (<>
+          {/* ── Driver selector (multi-file) ───────────────────────── */}
+          {drivers.length > 1 && (
+            <div className="driver-selector no-print">
+              {drivers.map((d, i) => {
+                const dViols = checkCompliance(d.days).filter(v => v.severity !== "INFO");
+                return (
+                  <button key={d.cardNumber || i} className={`driver-pill ${i === activeIdx ? "driver-pill-active" : ""}`} onClick={() => { setActiveIdx(i); setTab("activities"); }}>
+                    <span className="driver-pill-name">{d.name || "Onbekend"}</span>
+                    {d.cardNumber && <span className="driver-pill-card">{d.cardNumber.slice(-4)}</span>}
+                    {dViols.length > 0 && <span className="driver-pill-badge">{dViols.length}</span>}
+                    <button className="driver-pill-remove" onClick={e => { e.stopPropagation(); removeDriver(i); }} title="Verwijderen">x</button>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {/* ── Driver header ──────────────────────────────────────── */}
           <div style={{ marginBottom: 20 }}>
             <h1 className="driver-name">{data.name}</h1>
