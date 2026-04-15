@@ -340,45 +340,116 @@ function checkContinuousDriving(days, violations) {
 }
 
 /**
+ * Compute the effective longest rest for each day, accounting for cross-day
+ * rest spans and gaps in card data (card removed = driver resting).
+ *
+ * When the card is not in the tachograph (overnight, weekends), no activity
+ * is recorded. The gap between the end of one day's last activity and the
+ * start of the next day's first activity is counted as rest.
+ */
+function computeEffectiveRest(sortedDays) {
+  const result = new Map(); // dateKey -> { longestRest, restSegs (including cross-day) }
+
+  for (let idx = 0; idx < sortedDays.length; idx++) {
+    const day = sortedDays[idx];
+    const segs = toSegments(day.activities || []);
+    const dateKey = day.date.toDateString();
+
+    // Longest rest within this day's segments
+    let longestInDay = 0;
+    for (const seg of segs) {
+      if (seg.act === 0 && seg.dur > longestInDay) longestInDay = seg.dur;
+    }
+
+    // Trailing rest: rest at end of this day (from last non-rest to midnight)
+    let trailing = 0;
+    for (let i = segs.length - 1; i >= 0; i--) {
+      if (segs[i].act === 0) trailing += segs[i].dur;
+      else break;
+    }
+
+    // Leading rest: rest at start of this day (from midnight to first non-rest)
+    let leading = 0;
+    for (const seg of segs) {
+      if (seg.act === 0) leading += seg.dur;
+      else break;
+    }
+
+    // Cross-day rest with PREVIOUS day:
+    // = previous day's trailing rest + gap (missing days) + this day's leading rest
+    let crossRestBefore = leading; // at minimum, leading rest of today
+    if (idx > 0) {
+      const prevDay = sortedDays[idx - 1];
+      const prevSegs = toSegments(prevDay.activities || []);
+      let prevTrailing = 0;
+      for (let i = prevSegs.length - 1; i >= 0; i--) {
+        if (prevSegs[i].act === 0) prevTrailing += prevSegs[i].dur;
+        else break;
+      }
+      // Gap between prev day and this day (missing calendar days = card out = rest)
+      const dayGap = Math.round((day.date.getTime() - prevDay.date.getTime()) / 86400000);
+      const gapMinutes = Math.max(0, (dayGap - 1)) * 1440; // each missing day = 1440 min rest
+      crossRestBefore = prevTrailing + gapMinutes + leading;
+    }
+
+    // Cross-day rest with NEXT day:
+    // = this day's trailing rest + gap + next day's leading rest
+    let crossRestAfter = trailing;
+    if (idx < sortedDays.length - 1) {
+      const nextDay = sortedDays[idx + 1];
+      const nextSegs = toSegments(nextDay.activities || []);
+      let nextLeading = 0;
+      for (const seg of nextSegs) {
+        if (seg.act === 0) nextLeading += seg.dur;
+        else break;
+      }
+      const dayGap = Math.round((nextDay.date.getTime() - day.date.getTime()) / 86400000);
+      const gapMinutes = Math.max(0, (dayGap - 1)) * 1440;
+      crossRestAfter = trailing + gapMinutes + nextLeading;
+    }
+
+    const effectiveRest = Math.max(longestInDay, crossRestBefore, crossRestAfter);
+
+    // Collect all rest segments including cross-day for split rest check
+    const allRestSegs = segs.filter(s => s.act === 0).map(s => s.dur);
+    if (crossRestBefore > leading) allRestSegs.unshift(crossRestBefore);
+    if (crossRestAfter > trailing) allRestSegs.push(crossRestAfter);
+
+    result.set(dateKey, { longestRest: effectiveRest, restDurations: allRestSegs });
+  }
+  return result;
+}
+
+/**
  * Rule 5 — Insufficient daily rest (Art. 8)
  * Regular daily rest: >= 11h within a 24h period.
  * Reduced daily rest: >= 9h (max 3x between weekly rests).
  *
- * Simplified: check the longest continuous rest per day.
+ * Accounts for cross-day rest spans and card-out gaps.
  */
 function checkDailyRest(days, violations) {
   let reducedRestCount = 0;
+  const sorted = [...days].sort((a, b) => a.date - b.date);
+  const effectiveRestMap = computeEffectiveRest(sorted);
 
-  for (const day of days) {
-    const segs = toSegments(day.activities || []);
+  for (const day of sorted) {
+    const dateKey = day.date.toDateString();
+    const info = effectiveRestMap.get(dateKey);
+    if (!info) continue;
 
-    // Find longest continuous rest period (act === 0)
-    let longestRest = 0;
-    for (const seg of segs) {
-      if (seg.act === 0 && seg.dur > longestRest) {
-        longestRest = seg.dur;
-      }
-    }
-
-    // Also consider rest that spans from end of activities to midnight
-    // and rest at start of day — these are already captured in segments
-    // since toSegments fills to 1440.
+    const longestRest = info.longestRest;
 
     if (longestRest >= 11 * 60) {
-      // Compliant — regular daily rest
-      continue;
+      continue; // Compliant — regular daily rest
     }
 
-    // Rule 9 — Split daily rest check (Art. 8(2) Reg 561/2006)
-    // Before flagging a violation for <11h longest rest, check if there is a
-    // valid 3h + 9h split pattern (any rest >= 3h followed later by a rest >= 9h,
-    // totaling >= 12h within the same 24h period).
-    const restSegs = segs.filter((s) => s.act === 0);
+    // Rule 9 — Split daily rest (3h + 9h = 12h)
+    const restDurs = info.restDurations;
     let splitRestCompliant = false;
-    for (let i = 0; i < restSegs.length; i++) {
-      if (restSegs[i].dur >= 3 * 60) {
-        for (let j = i + 1; j < restSegs.length; j++) {
-          if (restSegs[j].dur >= 9 * 60 && restSegs[i].dur + restSegs[j].dur >= 12 * 60) {
+    for (let i = 0; i < restDurs.length; i++) {
+      if (restDurs[i] >= 3 * 60) {
+        for (let j = i + 1; j < restDurs.length; j++) {
+          if (restDurs[j] >= 9 * 60 && restDurs[i] + restDurs[j] >= 12 * 60) {
             splitRestCompliant = true;
             break;
           }
@@ -386,17 +457,11 @@ function checkDailyRest(days, violations) {
       }
       if (splitRestCompliant) break;
     }
-
-    if (splitRestCompliant) {
-      // Compliant via split daily rest (3h + 9h)
-      continue;
-    }
+    if (splitRestCompliant) continue;
 
     if (longestRest >= 9 * 60) {
-      // Reduced daily rest
       reducedRestCount++;
       if (reducedRestCount > 3) {
-        // Too many reduced rests — violation
         violations.push({
           date: day.date,
           rule: "Insufficient daily rest (excess reduced rests)",
@@ -407,34 +472,21 @@ function checkDailyRest(days, violations) {
           article: "Art. 8(4) Reg 561/2006",
         });
       }
-      // Otherwise the reduced rest is allowed
       continue;
     }
 
-    // Less than 9h — definite violation, severity depends on how short
-    let severity;
-    let requiredLabel;
-
+    // Less than 9h
+    let severity, requiredLabel;
     if (reducedRestCount < 3) {
-      // Could have taken a reduced rest (9h minimum)
-      if (longestRest >= 8 * 60) {
-        severity = "MI";
-      } else if (longestRest >= 7 * 60) {
-        severity = "SI";
-      } else {
-        severity = "VSI";
-      }
+      if (longestRest >= 8 * 60) severity = "MI";
+      else if (longestRest >= 7 * 60) severity = "SI";
+      else severity = "VSI";
       requiredLabel = "9h 00m (reduced)";
-      reducedRestCount++; // Count this as a (violated) reduced rest attempt
+      reducedRestCount++;
     } else {
-      // Already exhausted reduced rests — must take 11h regular
-      if (longestRest >= 10 * 60) {
-        severity = "MI";
-      } else if (longestRest >= 8 * 60 + 30) {
-        severity = "SI";
-      } else {
-        severity = "VSI";
-      }
+      if (longestRest >= 10 * 60) severity = "MI";
+      else if (longestRest >= 8 * 60 + 30) severity = "SI";
+      else severity = "VSI";
       requiredLabel = "11h 00m (regular)";
     }
 
@@ -608,20 +660,22 @@ function checkWeeklyRest(days, violations) {
       if (info) longest = Math.max(longest, info.longestInner);
     }
 
-    // Check cross-day spans: trailing rest of day N + full-rest days + leading rest of next non-full-rest day
+    // Check cross-day spans: trailing rest of day N + gap (missing days = rest) + leading rest of next day
     for (let i = 0; i < wSorted.length - 1; i++) {
       const info = restInfoByDate.get(wSorted[i].date.getTime());
       if (!info) continue;
       let span = info.trailing;
 
-      // Walk forward across consecutive days
+      // Walk forward across days (including gaps for missing days = card out = rest)
       for (let j = i + 1; j < wSorted.length; j++) {
-        // Check days are truly consecutive calendar days
         const prevDate = wSorted[j - 1].date;
         const curDate = wSorted[j].date;
-        const diffMs = curDate.getTime() - prevDate.getTime();
-        const diffDays = Math.round(diffMs / 86400000);
-        if (diffDays !== 1) break; // not consecutive, gap in data
+        const diffDays = Math.round((curDate.getTime() - prevDate.getTime()) / 86400000);
+
+        // Add rest for any missing calendar days (card removed = rest)
+        if (diffDays > 1) {
+          span += (diffDays - 1) * 1440;
+        }
 
         const jInfo = restInfoByDate.get(curDate.getTime());
         if (!jInfo) break;
@@ -637,6 +691,15 @@ function checkWeeklyRest(days, violations) {
       }
 
       longest = Math.max(longest, span);
+    }
+
+    // Also check: if the first day has leading rest + gap before it (within the week)
+    // and the last day has trailing rest + gap after it
+    if (wSorted.length > 0) {
+      const firstInfo = restInfoByDate.get(wSorted[0].date.getTime());
+      if (firstInfo) longest = Math.max(longest, firstInfo.leading);
+      const lastInfo = restInfoByDate.get(wSorted[wSorted.length - 1].date.getTime());
+      if (lastInfo) longest = Math.max(longest, lastInfo.trailing);
     }
 
     return longest;
