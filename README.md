@@ -2,7 +2,34 @@
 
 100% browser-based tachograph (.ddd) file viewer with EU + Belgian compliance checking. No data leaves your device.
 
-**[Live Demo](https://yasuke2000.github.io/tachoviewer/)**
+**[Live Demo](https://yasuke2000.github.io/tachoviewer/)** · **[Meld een bug / Report a bug](https://github.com/Yasuke2000/tachoviewer/issues/new?template=bug_report.md)**
+
+> **BETA** — Openbare testversie. Feedback welkom via [GitHub Issues](https://github.com/Yasuke2000/tachoviewer/issues).
+
+---
+
+## Voor Belgische transportbedrijven 🇧🇪
+
+TachoViewer leest je digitale tachograafbestanden (`.ddd`) direct in je browser, zonder dat er data naar een server gestuurd wordt. Ideaal voor:
+
+- **Transportbedrijven** die rij- en rusttijden willen controleren vóór een controle
+- **Zelfstandige vrachtwagenchauffeurs** die hun eigen naleving willen verifiëren
+- **Fleet managers** die bestuurderskaartdata snel willen analyseren
+- **Boekhouders en HR** die maandelijkse prestatiebladen moeten opstellen
+
+**Wat krijg je?**
+
+- Activiteitentijdlijn (rijden/werk/beschikbaar/rust) per dag
+- Automatische controle van 17 regels uit Reg 561/2006, Dir 2002/15/EC en KB 17/10/2016
+- Belgische boetecalculator per overtreding (volgens KB 8/12/2024)
+- Detectie van nachtwerk (00:00-07:00) en nachtpremie (20:00-06:00)
+- 21-dagen download deadline waarschuwing (Belgische regel)
+- Export naar PDF, Excel of CSV
+- Volledig gratis, geen account nodig
+
+**Privacy garantie:** je bestanden verlaten je browser niet. Geen upload, geen cookies, geen tracking. Sluit het tabblad en alle data is weg.
+
+---
 
 ## Features
 

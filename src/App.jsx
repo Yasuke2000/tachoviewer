@@ -415,7 +415,10 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div className="logo-mark">T</div>
           <div>
-            <div className="logo-text">TACHOVIEWER</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div className="logo-text">TACHOVIEWER</div>
+              <span className="beta-tag">BETA</span>
+            </div>
             <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.05em" }}>100% browser · geen upload</div>
           </div>
         </div>
@@ -432,7 +435,15 @@ export default function App() {
 
       <div className="app-wrap">
         {/* ── Upload zone ──────────────────────────────────────────── */}
-        {drivers.length === 0 && !busy && (
+        {drivers.length === 0 && !busy && (<>
+          {/* Beta notice */}
+          <div className="beta-notice">
+            <div className="beta-notice-head">
+              <span className="beta-tag-lg">BETA</span>
+              <strong>Openbare testversie</strong>
+            </div>
+            <p>TachoViewer is nog in testfase. Test gerust met je eigen .ddd bestanden. Merk je iets vreemds? <a href="https://github.com/Yasuke2000/tachoviewer/issues/new?template=bug_report.md" target="_blank" rel="noopener noreferrer">Meld het hier</a> of doe een suggestie via <a href="https://github.com/Yasuke2000/tachoviewer/issues/new?template=feature_request.md" target="_blank" rel="noopener noreferrer">feature request</a>. Feedback wordt zeer gewaardeerd.</p>
+          </div>
           <div className={`dropzone ${drag ? "dropzone-active" : ""}`}
             onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
             onDrop={e => { e.preventDefault(); setDrag(false); loadFiles(e.dataTransfer.files); }}
@@ -451,7 +462,7 @@ export default function App() {
               {" · "}<button className="link-btn" onClick={e => { e.stopPropagation(); setShowLegal("terms"); }}>Gebruiksvoorwaarden</button>
             </div>
           </div>
-        )}
+        </>)}
         {/* Hidden input for adding more files when drivers already loaded */}
         {drivers.length > 0 && <input ref={inputRef} type="file" accept=".ddd,.esm,.tgd,.add" multiple style={{ display: "none" }} onChange={e => { loadFiles(e.target.files); e.target.value = ""; }} />}
         {err && <div className="error-banner">⚠ {err}</div>}
@@ -697,7 +708,10 @@ export default function App() {
           {/* ── Footer ─────────────────────────────────────────────── */}
           <footer className="app-footer">
             <span>Rapport: {new Date().toLocaleString("nl-BE")}</span>
-            <span>TachoViewer · Reg 561/2006 + Dir 2002/15/EC + KB 17/10/2016</span>
+            <span>
+              <a href="https://github.com/Yasuke2000/tachoviewer/issues/new?template=bug_report.md" target="_blank" rel="noopener noreferrer" style={{ color: "#60a5fa", textDecoration: "none" }}>Feedback melden</a>
+              {" · "}TachoViewer BETA · Reg 561/2006 + Dir 2002/15/EC + KB 17/10/2016
+            </span>
           </footer>
           <div className="disclaimer">
             TachoViewer is een hulpmiddel en geen gecertificeerd compliance-instrument. Resultaten zijn indicatief — gebruik op eigen risico.
