@@ -120,7 +120,7 @@ npm run build    # production build
 
 - **Free for:** personal use, evaluation, testing, education, non-commercial experimentation
 - **Requires commercial license for:** transport companies, fleet operators, or any organization using this in a professional/commercial context
-- **Automatic conversion:** On **April 17, 2029** (3 years from first release), this code automatically converts to the MIT License — fully open source, no restrictions.
+- **Automatic conversion:** On **April 17, 2036** (10 years from first release), this code automatically converts to the MIT License — fully open source, no restrictions.
 
 **For commercial licensing inquiries:** contact@daviddelporte.com
 
