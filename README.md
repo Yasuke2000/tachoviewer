@@ -116,4 +116,18 @@ npm run build    # production build
 
 ## License
 
-Open source. See repository for details.
+**Business Source License 1.1** — source is publicly viewable, but commercial use requires a separate license.
+
+- **Free for:** personal use, evaluation, testing, education, non-commercial experimentation
+- **Requires commercial license for:** transport companies, fleet operators, or any organization using this in a professional/commercial context
+- **Automatic conversion:** On **April 17, 2029** (3 years from first release), this code automatically converts to the MIT License — fully open source, no restrictions.
+
+**For commercial licensing inquiries:** contact@daviddelporte.com
+
+See [LICENSE](./LICENSE) for the full license text.
+
+---
+
+## Disclaimer
+
+TachoViewer is an analytical tool and NOT a certified compliance instrument. Results are indicative only and do not constitute legal advice. Users remain fully responsible for verifying compliance with applicable regulations.

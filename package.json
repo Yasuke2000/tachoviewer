@@ -1,7 +1,15 @@
 {
   "name": "tachoviewer",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.1.0-beta",
+  "license": "BUSL-1.1",
+  "author": "David Delporte <contact@daviddelporte.com>",
+  "description": "100% browser-based EU tachograph (.ddd) viewer with Belgian compliance checking and fine calculator.",
+  "homepage": "https://yasuke2000.github.io/tachoviewer/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Yasuke2000/tachoviewer.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
